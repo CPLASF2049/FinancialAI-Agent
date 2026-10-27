@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "finagent-mcp"
-version = "1.0.0"
+version = "1.1.0"
 description = "面向中国 A 股的智能投研助手：MCP 工具服务器 + LangGraph 多 Agent 调度"
 readme = "README.md"
 # 已验证 3.11。3.14 目前不在支持范围：它的扩展模块 ABI 与 3.11 不兼容，而很多依赖

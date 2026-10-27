@@ -307,6 +307,8 @@ async def _stream_turn(
     agents: list[str] = []
     tools: list[dict[str, Any]] = []
     errors: list[str] = []
+    decisions: list[dict[str, Any]] = []
+    routed: set[str] = set()
     seen_token = False
 
     yield _sse("start", {"thread_id": thread_id, "message": message})
@@ -319,13 +321,22 @@ async def _stream_turn(
 
                 if kind == "route":
                     agent = str(event.get("agent") or "")
+                    label = AGENT_LABELS.get(agent, agent)
+                    # supervisor 会从自定义事件和 updates 各发一次同一路由，去重后再推
+                    if agent in routed:
+                        continue
+                    routed.add(agent)
                     yield _sse(
                         "route",
+                        {"agent": agent, "label": label, "reason": event.get("reason") or ""},
+                    )
+                    decisions.append(
                         {
+                            "step": "route",
                             "agent": agent,
-                            "label": AGENT_LABELS.get(agent, agent),
+                            "label": label,
                             "reason": event.get("reason") or "",
-                        },
+                        }
                     )
                 elif kind == "agent":
                     agent = str(event.get("agent") or "")
@@ -333,8 +344,53 @@ async def _stream_turn(
                 elif kind == "memory":
                     yield _sse("memory", {"updates": event.get("updates") or {}})
                 elif kind == "event":
+                    name = event.get("event")
+                    if name == "route":
+                        # 路由一律在这里统一处理：supervisor 会从自定义事件和 updates 各发
+                        # 一次，只在第一次到达时推给前端。
+                        agent = str(event.get("agent") or "")
+                        if agent in routed:
+                            continue
+                        routed.add(agent)
+                        label = AGENT_LABELS.get(agent, agent)
+                        yield _sse(
+                            "route",
+                            {
+                                "agent": agent,
+                                "label": label,
+                                "reason": event.get("reason") or "",
+                            },
+                        )
+                        decisions.append(
+                            {
+                                "step": "route",
+                                "agent": agent,
+                                "label": label,
+                                "reason": event.get("reason") or "",
+                            }
+                        )
+                        continue
                     yield _translate_agent_event(event, tools, seen_token)
-                    if event.get("event") == "token":
+                    if name == "critic":
+                        decisions.append(
+                            {
+                                "step": "critic",
+                                "agent": event.get("agent"),
+                                "label": event.get("label"),
+                                "verdict": event.get("verdict"),
+                                "issues": event.get("issues") or [],
+                            }
+                        )
+                    elif name == "risk":
+                        decisions.append(
+                            {
+                                "step": "risk",
+                                "label": AGENT_LABELS["risk_guard"],
+                                "flags": event.get("flags") or [],
+                                "actions": event.get("actions") or [],
+                            }
+                        )
+                    if name == "token":
                         seen_token = True
                 elif kind == "final":
                     result = event["result"]
@@ -371,6 +427,7 @@ async def _stream_turn(
             "agents": agents,
             "tools": tools,
             "errors": errors,
+            "decisions": decisions,
         },
     )
 
@@ -382,6 +439,7 @@ async def _stream_turn(
             "labels": [AGENT_LABELS.get(agent, agent) for agent in agents],
             "tool_calls": len(tools),
             "errors": errors,
+            "decisions": decisions,
         },
     )
 
@@ -409,6 +467,25 @@ def _translate_agent_event(
         return _sse("token", {"text": event.get("text") or "", "agent": event.get("agent")})
     if name == "agent_start":
         return _sse("agent", {"agent": event.get("agent"), "label": ""})
+    if name == "critic":
+        return _sse(
+            "critic",
+            {
+                "agent": event.get("agent"),
+                "label": event.get("label") or AGENT_LABELS.get(str(event.get("agent")), ""),
+                "verdict": event.get("verdict") or "pass",
+                "issues": event.get("issues") or [],
+            },
+        )
+    if name == "risk":
+        return _sse(
+            "risk",
+            {
+                "flags": event.get("flags") or [],
+                "actions": event.get("actions") or [],
+                "blocked": bool(event.get("blocked")),
+            },
+        )
     if name == "route":
         return _sse(
             "route",

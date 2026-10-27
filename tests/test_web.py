@@ -38,7 +38,7 @@ def test_thread_store_roundtrip(data_dir: Path) -> None:
     assert store.list_threads()[0]["id"] == created["id"]
 
     store.append(created["id"], {"role": "user", "text": "茅台现在多少钱"})
-    store.append(created["id"], {"role": "assistant", "text": "…", "agents": ["analyst"]})
+    store.append(created["id"], {"role": "assistant", "text": "…", "agents": ["technical_analyst"]})
 
     messages = store.messages(created["id"])
     assert [m["role"] for m in messages] == ["user", "assistant"]
@@ -128,7 +128,8 @@ def test_info_endpoint(client: TestClient) -> None:
     assert data["llm"]["enabled"] is False
     assert {expert["agent"] for expert in data["experts"]} == {
         "stock_picker",
-        "analyst",
+        "fundamental_analyst",
+        "technical_analyst",
         "backtest",
         "portfolio",
         "alert",
@@ -180,14 +181,20 @@ def test_chat_streams_events_and_persists_the_turn(client: TestClient) -> None:
 
     done = next(payload for name, payload in events if name == "done")
     assert done["answer"]
-    assert done["agents"] == ["analyst"]
+    assert done["agents"] == ["technical_analyst"]
     assert done["tool_calls"] >= 1
+    # 决策轨迹要随 done 一起给出，前端「决策轨迹」面板靠它兜底
+    assert done["decisions"]
+    assert any(item["step"] == "route" for item in done["decisions"])
+    assert any(item["step"] == "critic" for item in done["decisions"])
 
     # 落盘：一轮对话产生 user + assistant 两条
     messages = client.get(f"/api/threads/{thread_id}").json()["messages"]
     assert [m["role"] for m in messages] == ["user", "assistant"]
-    assert messages[1]["agents"] == ["analyst"]
+    assert messages[1]["agents"] == ["technical_analyst"]
     assert messages[1]["tools"]
+    # 决策轨迹要落盘，重新打开会话才看得到
+    assert messages[1]["decisions"]
 
     # 会话标题来自第一条用户消息
     listed = client.get("/api/threads").json()["threads"]

@@ -33,7 +33,11 @@ async def test_expert_tool_subsets_are_distinct(offline_env) -> None:
             assert subset, agent
             assert all(tool.name in app.toolkit.by_name for tool in subset)
     # 指标工具归分析师所有，预警专家不应该看到它们。
-    assert "compute_indicators" in EXPERT_TOOLS["analyst"]
+    # 技术面拿到指标工具，基本面拿不到；这条边界正是两个分析师拆开的意义
+    assert "compute_indicators" in EXPERT_TOOLS["technical_analyst"]
+    assert "compute_indicators" not in EXPERT_TOOLS["fundamental_analyst"]
+    assert "get_income_statement" in EXPERT_TOOLS["fundamental_analyst"]
+    assert "get_income_statement" not in EXPERT_TOOLS["technical_analyst"]
     assert "compute_indicators" not in EXPERT_TOOLS["alert"]
 
 
@@ -51,7 +55,7 @@ async def test_missing_tool_name_raises(offline_env) -> None:
 @pytest.mark.parametrize(
     ("question", "expected"),
     [
-        ("贵州茅台现在多少钱？", ["analyst"]),
+        ("贵州茅台现在多少钱？", ["technical_analyst"]),
         ("帮我筛选 PE 小于 10 的银行股", ["stock_picker"]),
         ("用 MACD 策略回测中信证券近一年", ["backtest"]),
         ("我以 10.5 元买入 1000 股平安银行", ["portfolio"]),
@@ -96,13 +100,27 @@ async def test_hop_limit_is_enforced(offline_env, monkeypatch) -> None:
 # ----------------------------------------------------------------------
 # 专家输出
 # ----------------------------------------------------------------------
-async def test_analyst_answer_mentions_price_and_date(offline_env) -> None:
+async def test_technical_answer_mentions_price_and_indicators(offline_env) -> None:
     async with open_app() as app:
         result = await app.arun("茅台最近一个月走势如何", user_id="a", thread_id="a1")
+    assert result.agents == ["technical_analyst"]
     assert "贵州茅台" in result.answer
     assert "最新价" in result.answer
-    assert "PE" in result.answer
+    assert "技术" in result.answer
     assert any(character.isdigit() for character in result.answer)
+    # 职责边界：技术面不许谈估值
+    assert "PE" not in result.answer
+
+
+async def test_fundamental_answer_mentions_valuation(offline_env) -> None:
+    async with open_app() as app:
+        result = await app.arun("茅台估值贵不贵", user_id="a2", thread_id="a3")
+    assert result.agents == ["fundamental_analyst"]
+    assert "PE" in result.answer
+    assert "PB" in result.answer
+    # 职责边界：基本面不许谈技术形态
+    assert "金叉" not in result.answer
+    assert "MACD" not in result.answer
 
 
 async def test_screen_answer_is_a_markdown_table(offline_env) -> None:
@@ -214,7 +232,7 @@ async def test_per_turn_channels_reset(offline_env) -> None:
         await app.arun("用 MACD 回测中信证券近一年", user_id="iso", thread_id="i1")
         second = await app.arun("茅台现在多少钱", user_id="iso", thread_id="i1")
     # 新一轮对话里，回测专家不能被当成「已经跑过」。
-    assert second.agents == ["analyst"]
+    assert second.agents == ["technical_analyst"]
 
 
 async def test_conversation_history_accumulates(offline_env) -> None:

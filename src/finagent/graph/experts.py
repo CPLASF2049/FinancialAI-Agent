@@ -1,7 +1,15 @@
-"""五个专家 Agent。
+"""六个专家 Agent。
 
 每个专家声明**自己拥有的那部分 MCP 工具**。这份白名单是解耦的核心：模型看不到 41 个
 工具，只看到与它任务相关的 4–17 个，工具选择准确率因此明显提升，提示词也更小。
+
+分析被拆成**基本面**与**技术面**两条独立推理链路，而不是一个什么都能干的「分析师」：
+
+* 基本面只看估值、财报、宏观、指数对比；
+* 技术面只看量价、指标、形态、资金流、龙虎榜。
+
+两份白名单刻意不重叠——同一个角色既算 MACD 又读利润表，结果往往是两个维度都浅尝辄止。
+两条链路各自出结论，再由审查节点（:mod:`finagent.graph.critic`）做交叉一致性检查。
 
 专家有两种运行模式：
 
@@ -32,22 +40,28 @@ log = get_logger("graph.experts")
 #: 每个专家可调用的 MCP 工具名。尽量精简且互不重叠——
 #: 这既是安全边界，也是提示词瘦身手段。
 EXPERT_TOOLS: dict[str, tuple[str, ...]] = {
-    "analyst": (
+    # 基本面：估值、财报、宏观、指数对比。**不含任何 K 线与指标工具**。
+    "fundamental_analyst": (
+        "get_current_time",
+        "resolve_symbol",
+        "get_daily_basic",
+        "get_income_statement",
+        "get_macro",
+        "get_index_daily",
+        "get_global_index_comparison",
+    ),
+    # 技术面：量价、指标、形态、资金流。**不含任何财报与估值工具**。
+    "technical_analyst": (
         "get_current_time",
         "resolve_symbol",
         "get_realtime_price",
         "get_daily_price",
-        "get_daily_basic",
-        "get_income_statement",
-        "get_index_daily",
         "compute_indicators",
         "detect_patterns",
         "get_moneyflow",
         "get_limit_list",
         "get_top_list",
         "get_concept_detail",
-        "get_macro",
-        "get_global_index_comparison",
     ),
     "stock_picker": (
         "get_current_time",
@@ -121,15 +135,20 @@ async def run_expert(
     model: Any = None,
     profile_summary: str = "",
     prior_artifacts: dict[str, Any] | None = None,
+    critique: dict[str, Any] | None = None,
 ) -> ExpertOutcome:
-    """执行一个专家，把两种模式统一成 :class:`ExpertOutcome`。"""
+    """执行一个专家，把两种模式统一成 :class:`ExpertOutcome`。
+
+    ``critique`` 非空表示这次是**返工**：把审查意见原样交给专家，要求逐条回应，
+    而不是从头再写一遍。
+    """
 
     if agent not in EXPERT_TOOLS:
         return ExpertOutcome(agent=agent, answer="", errors=[f"unknown expert '{agent}'"])
 
     if model is None:
         runner = ToolRunner(toolkit=toolkit, agent=agent)
-        result = await offline.run(agent, question, runner)
+        result = await offline.run(agent, question, runner, critique=critique)
         return ExpertOutcome(
             agent=agent,
             answer=result.answer,
@@ -151,6 +170,8 @@ async def run_expert(
             context_lines.append(
                 "其他专家已经得出的中间结论（可直接引用，必要时自行核实）：\n" + summary
             )
+    if critique and critique.get("issues"):
+        context_lines.append(_revision_block(critique))
 
     loop = await run_tool_loop(
         agent=agent,
@@ -169,6 +190,22 @@ async def run_expert(
         tool_calls=loop.tool_calls,
         mode="llm",
     )
+
+
+def _revision_block(critique: dict[str, Any]) -> str:
+    """把审查意见组织成「逐条回应」的指令。"""
+
+    lines = [
+        "审查者指出上一版结论存在以下问题，请**逐条**修正：",
+    ]
+    for index, issue in enumerate(critique.get("issues") or [], start=1):
+        detail = issue.get("detail") or issue.get("type") or ""
+        lines.append(f"{index}. [{issue.get('type', '问题')}] {detail}")
+    lines.append(
+        "要求：每个问题都要么补上工具数据支撑，要么删掉该论断；不要解释你为什么没错，"
+        "直接给出修订后的结论。"
+    )
+    return "\n".join(lines)
 
 
 def _summarise_artifacts(artifacts: dict[str, Any], limit: int = 1500) -> str:
@@ -194,10 +231,19 @@ def _summarise_artifacts(artifacts: dict[str, Any], limit: int = 1500) -> str:
             )
         elif agent == "alert":
             parts.append(f"- 预警：{payload.get('label', payload.get('id'))}")
-        elif agent == "analyst":
+        elif agent in ("fundamental_analyst", "technical_analyst"):
             for code, facts in payload.items():
-                if isinstance(facts, dict) and "quote" in facts:
+                if not isinstance(facts, dict):
+                    continue
+                if "quote" in facts and isinstance(facts["quote"], dict):
                     parts.append(f"- 行情：{code} 最新价 {facts['quote'].get('price')}")
+                if "valuation" in facts and isinstance(facts["valuation"], dict):
+                    parts.append(
+                        f"- 估值：{code} PE {facts['valuation'].get('pe')} "
+                        f"PB {facts['valuation'].get('pb')}"
+                    )
+                if "indicators" in facts and isinstance(facts["indicators"], dict):
+                    parts.append(f"- 技术：{code} MACD RSI 等指标已计算")
     text = "\n".join(parts)
     return text[:limit]
 

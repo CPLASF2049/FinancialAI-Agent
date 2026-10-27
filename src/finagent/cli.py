@@ -87,6 +87,20 @@ def _render_agent_event(console: Any, event: dict[str, Any]) -> None:
     elif name == "tool_result":
         mark = "[green]✓[/green]" if event.get("ok") else "[red]✗[/red]"
         console.print(f"  {mark} [dim]{_short(event.get('preview'), 160)}[/dim]")
+    elif name == "critic":
+        verdict = event.get("verdict")
+        mark = "[yellow]退回返工[/yellow]" if verdict == "revise" else "[green]通过[/green]"
+        console.print(f"  [magenta]⚖ 审查 {event.get('label')}[/magenta] {mark}")
+        for issue in event.get("issues") or []:
+            style = "yellow" if issue.get("severity") == "high" else "dim"
+            console.print(
+                f"    [{style}]· {issue.get('label')}：{_short(issue.get('detail'), 120)}[/]"
+            )
+    elif name == "risk":
+        marks = "、".join(flag.get("label", "") for flag in event.get("flags") or [])
+        console.print(f"  [red]🛡 风控[/red] 命中：{marks}")
+        for action in event.get("actions") or []:
+            console.print(f"    [dim]· {action}[/dim]")
 
 
 def _short(value: Any, limit: int = 100) -> str:
@@ -255,11 +269,15 @@ def _print_graph(console: Any, verbose: bool = False) -> None:
             + ", ".join(expert["tools"][:6])
             + ("…" if expert["tool_count"] > 6 else ""),
         )
+    table.add_row("critic", "审查", "判定 pass / revise（论据、矛盾、谄媚）")
     table.add_row("save_memory", "节点", "update_user_profile")
+    table.add_row("risk_guard", "风控", "确定性护栏：偏好冲突 / 强指令 / 来源标注")
     table.add_row("finalize", "节点", "汇总最终答案")
     console.print(table)
     console.print(
         f"\n[dim]max_agent_hops={resolved.max_agent_hops} · "
+        f"max_revisions={resolved.max_revisions} · "
+        f"risk_guard={'开' if resolved.risk_guard_enabled else '关'} · "
         f"llm={describe_llm(resolved)['mode']} · "
         f"transport={os.environ.get('FINAGENT_MCP_TRANSPORT', 'inprocess')}[/dim]"
     )
@@ -267,10 +285,12 @@ def _print_graph(console: Any, verbose: bool = False) -> None:
         console.print("\n[bold]连边[/bold]")
         console.print("START → load_memory → supervisor")
         for agent in AGENT_LABELS:
-            if agent == "finish":
+            if agent in ("finish", "critic", "risk_guard"):
                 continue
-            console.print(f"  supervisor ──{agent}──▶ {agent} ──▶ supervisor")
-        console.print("  supervisor ──finish──▶ save_memory → finalize → END")
+            console.print(f"  supervisor ──{agent}──▶ {agent} ──▶ critic")
+        console.print("  critic ──pass──▶ supervisor")
+        console.print("  critic ──revise──▶ 打回该专家返工（max_revisions 封顶）")
+        console.print("  supervisor ──finish──▶ save_memory → risk_guard → finalize → END")
 
 
 # ----------------------------------------------------------------------

@@ -24,8 +24,12 @@ from finagent.graph.intents import (
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("贵州茅台现在多少钱", "analyst"),
-        ("茅台最近一个月走势怎么样", "analyst"),
+        ("贵州茅台现在多少钱", "technical_analyst"),
+        ("茅台最近一个月走势怎么样", "technical_analyst"),
+        ("茅台估值贵不贵", "fundamental_analyst"),
+        ("茅台的市盈率和市净率是多少", "fundamental_analyst"),
+        ("茅台财报里的净利润怎么样", "fundamental_analyst"),
+        ("茅台 MACD 是不是金叉了", "technical_analyst"),
         ("帮我筛选 PE 小于 15 的银行股", "stock_picker"),
         ("有哪些低估的长尾股票", "stock_picker"),
         ("用 MACD 策略回测中信证券近一年", "backtest"),

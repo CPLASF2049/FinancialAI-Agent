@@ -30,7 +30,7 @@ async def test_tool_loop_executes_a_tool_then_answers(offline_env) -> None:
             ]
         )
         result = await run_tool_loop(
-            agent="analyst",
+            agent="technical_analyst",
             model=model,
             tools=tools,
             system_prompt="You are a test agent.",
@@ -56,7 +56,7 @@ async def test_tool_loop_records_error_envelopes(offline_env) -> None:
             ]
         )
         result = await run_tool_loop(
-            agent="analyst",
+            agent="technical_analyst",
             model=model,
             tools=tools,
             system_prompt="test",
@@ -74,7 +74,7 @@ async def test_tool_loop_stops_at_iteration_cap(offline_env) -> None:
             [ai_tool_call("get_current_time", {}, f"c{index}") for index in range(5)]
         )
         result = await run_tool_loop(
-            agent="analyst",
+            agent="technical_analyst",
             model=model,
             tools=tools,
             system_prompt="test",
@@ -91,7 +91,7 @@ async def test_tool_loop_handles_unknown_tool(offline_env) -> None:
         tools = toolkit.subset(["get_current_time"])
         model = ScriptedChatModel([ai_tool_call("not_a_tool", {}, "c1"), ai_text("done")])
         result = await run_tool_loop(
-            agent="analyst",
+            agent="technical_analyst",
             model=model,
             tools=tools,
             system_prompt="test",
@@ -127,7 +127,7 @@ async def test_graph_with_llm_routing(offline_env) -> None:
         model = ScriptedChatModel(
             [
                 # Supervisor 的决策
-                ai_text(json.dumps({"agent": "analyst", "reason": "quote question"})),
+                ai_text(json.dumps({"agent": "technical_analyst", "reason": "quote question"})),
                 # 分析师的 ReAct：先调工具，再作答
                 ai_tool_call("get_realtime_price", {"ts_code": "600519.SH"}, "t1"),
                 ai_text("贵州茅台最新价已获取（见工具结果）。"),
@@ -145,7 +145,7 @@ async def test_graph_with_llm_routing(offline_env) -> None:
         )
         final = await graph.ainvoke(initial_state("茅台现在多少钱", user_id="u", thread_id="t"))
 
-    assert "analyst" in final["completed_agents"]
+    assert "technical_analyst" in final["completed_agents"]
     assert "贵州茅台" in final["answer"]
     assert final["answer"].strip()
 
@@ -171,7 +171,7 @@ async def test_graph_falls_back_to_rules_on_bad_llm_decision(offline_env) -> Non
         final = await graph.ainvoke(initial_state("茅台现在多少钱", user_id="u", thread_id="t2"))
 
     # 回退到关键词路由，它会为「查行情」这类问题选中分析师。
-    assert "analyst" in final["completed_agents"]
+    assert "technical_analyst" in final["completed_agents"]
 
 
 # ----------------------------------------------------------------------

@@ -24,6 +24,7 @@
     tools: [],
     llmEnabled: false,
     llmHasKey: false,
+    decisions: [],
   };
 
   // ------------------------------------------------------------------
@@ -302,6 +303,17 @@
     meta.className = "meta";
     bubble.appendChild(meta);
 
+    // 决策轨迹：路由 / 审查 / 风控 —— 结论是怎么被逼出来的
+    const decision = document.createElement("details");
+    decision.className = "trace decision hidden";
+    const decisionSummary = document.createElement("summary");
+    const decisionBody = document.createElement("div");
+    decisionBody.className = "trace-body";
+    decision.appendChild(decisionSummary);
+    decision.appendChild(decisionBody);
+    bubble.appendChild(decision);
+
+    // 执行过程：工具调用明细
     const trace = document.createElement("details");
     trace.className = "trace hidden";
     const summary = document.createElement("summary");
@@ -324,15 +336,30 @@
         meta.appendChild(badge(agent));
       });
       (payload.tools || []).forEach((tool) => addToolLine(trace, summary, traceBody, tool));
+      (payload.decisions || []).forEach((item) =>
+        addDecisionLine(decision, decisionSummary, decisionBody, item)
+      );
       text.innerHTML = renderMarkdown(payload.text || "");
       if (!(payload.agents || []).length && !(payload.tools || []).length) {
         meta.remove();
       }
       if (!(payload.tools || []).length) trace.remove();
+      if (!(payload.decisions || []).length) decision.remove();
     }
 
     scrollToBottom();
-    return { wrap, bubble, meta, trace, summary, traceBody, text };
+    return {
+      wrap,
+      bubble,
+      meta,
+      trace,
+      summary,
+      traceBody,
+      decision,
+      decisionSummary,
+      decisionBody,
+      text,
+    };
   }
 
   function badge(label) {
@@ -365,6 +392,68 @@
     traceBody.appendChild(line);
     const total = traceBody.querySelectorAll(".trace-line").length;
     summary.textContent = `执行过程 · ${total} 次工具调用`;
+  }
+
+  /* 一条决策记录：路由 / 审查 / 风控。比工具调用更「语义」，所以单独一块。 */
+  function addDecisionLine(container, summary, body, item) {
+    const step = item.step || "route";
+
+    // 同一路由重复出现（supervisor 可能多轮）时只保留有理由的那条
+    if (step === "route") {
+      const dup = [...body.children].some(
+        (node) => node.dataset.step === "route" && node.dataset.agent === item.agent
+      );
+      if (dup) return;
+    }
+
+    container.classList.remove("hidden");
+    const line = document.createElement("div");
+    line.className = "trace-line";
+    line.dataset.step = step;
+    if (item.agent) line.dataset.agent = item.agent;
+
+    const mark = document.createElement("span");
+    mark.className = "dec-mark";
+    const head = document.createElement("span");
+    head.className = "dec-head";
+    const detail = document.createElement("span");
+    detail.className = "args";
+
+    if (step === "route") {
+      mark.textContent = "→";
+      mark.classList.add("dec-route");
+      head.textContent = `交给 ${item.label || item.agent || ""}`;
+      detail.textContent = item.reason || "";
+    } else if (step === "critic") {
+      const passed = item.verdict !== "revise";
+      mark.textContent = passed ? "✓" : "↺";
+      mark.classList.add(passed ? "ok" : "dec-revise");
+      const issues = item.issues || [];
+      head.textContent = passed
+        ? `审查通过 · ${item.label || ""}`
+        : `退回返工 · ${item.label || ""}`;
+      detail.textContent = issues.length
+        ? issues.map((issue) => issue.detail || issue.label).join("；")
+        : "未发现问题";
+    } else if (step === "risk") {
+      mark.textContent = "🛡";
+      mark.classList.add("dec-risk");
+      const flags = item.flags || [];
+      head.textContent = `风控命中 ${flags.length} 条`;
+      detail.textContent = flags.map((flag) => flag.label || flag.code).join("、");
+    } else {
+      mark.textContent = "·";
+      head.textContent = item.label || step;
+      detail.textContent = "";
+    }
+
+    line.appendChild(mark);
+    line.appendChild(head);
+    line.appendChild(detail);
+    body.appendChild(line);
+
+    const total = body.querySelectorAll(".trace-line").length;
+    summary.textContent = `决策轨迹 · ${total} 步`;
   }
 
   function summariseArgs(args) {
@@ -417,6 +506,7 @@
     state.seenToken = false;
     state.agents = [];
     state.tools = [];
+    state.decisions = [];
     state.controller = new AbortController();
 
     try {
@@ -500,9 +590,36 @@
       case "route": {
         if (data.label) {
           addBadgeOnce(view.meta, data.label);
+          addDecisionLine(view.decision, view.decisionSummary, view.decisionBody, {
+            step: "route",
+            agent: data.agent,
+            label: data.label,
+            reason: data.reason,
+          });
+          state.decisions.push({ step: "route", ...data });
           const hint = thinking.querySelector("span:last-child");
           if (hint) hint.textContent = `交给「${data.label}」处理…`;
         }
+        break;
+      }
+      case "critic": {
+        addDecisionLine(view.decision, view.decisionSummary, view.decisionBody, {
+          step: "critic",
+          agent: data.agent,
+          label: data.label,
+          verdict: data.verdict,
+          issues: data.issues,
+        });
+        state.decisions.push({ step: "critic", ...data });
+        break;
+      }
+      case "risk": {
+        addDecisionLine(view.decision, view.decisionSummary, view.decisionBody, {
+          step: "risk",
+          flags: data.flags,
+          actions: data.actions,
+        });
+        state.decisions.push({ step: "risk", ...data });
         break;
       }
       case "agent": {
@@ -549,6 +666,11 @@
       }
       case "done": {
         thinking.remove();
+        if (!view.decisionBody.children.length && (data.decisions || []).length) {
+          data.decisions.forEach((item) =>
+            addDecisionLine(view.decision, view.decisionSummary, view.decisionBody, item)
+          );
+        }
         view.bubble.querySelectorAll('[data-role="tool-hint"]').forEach((n) => n.remove());
         (data.labels || []).forEach((label) => addBadgeOnce(view.meta, label));
         if (!view.meta.children.length) view.meta.remove();

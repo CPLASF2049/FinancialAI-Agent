@@ -15,14 +15,23 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage
 
+from finagent.graph.agent_loop import stream_writer
+from finagent.graph.critic import (
+    REVISABLE_AGENTS,
+    review,
+    review_with_llm,
+    summarise_tools,
+)
 from finagent.graph.experts import run_expert
 from finagent.graph.intents import (
     classify_next,
     extract_profile_hints,
     looks_like_preference,
+    wants_deep_analysis,
 )
 from finagent.graph.mcp_client import Toolkit
 from finagent.graph.prompts import build_supervisor_prompt
+from finagent.graph.risk import guard, held_codes_from
 from finagent.graph.state import AGENT_LABELS, EXPERT_AGENTS, FinState
 from finagent.graph.tooling import ToolRunner
 from finagent.logging import get_logger
@@ -224,9 +233,12 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
     # ------------------------------------------------------------------
     def make_expert_node(agent: str) -> Callable[..., Any]:
         async def expert_node(state: FinState) -> Any:
-            from langgraph.types import Command
+            from langgraph.types import Command, Overwrite
 
             question = state.get("question") or ""
+            critique = state.get("critique") or {}
+            is_revision = critique.get("agent") == agent and critique.get("verdict") == "revise"
+
             outcome = await run_expert(
                 agent,
                 question,
@@ -234,28 +246,211 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
                 model=get_model(),
                 profile_summary=state.get("profile_summary") or "",
                 prior_artifacts=state.get("artifacts") or {},
+                critique=critique if is_revision else None,
             )
 
             log.info(
-                "专家 %s 完成（模式=%s，工具调用=%d，错误=%d）",
+                "专家 %s 完成（模式=%s，工具调用=%d，错误=%d，返工=%s）",
                 agent,
                 outcome.mode,
                 outcome.tool_calls,
                 len(outcome.errors),
+                "是" if is_revision else "否",
             )
+
+            entry: dict[str, Any] = {"agent": agent, "answer": outcome.answer}
+            if is_revision:
+                entry["revised"] = True
+                entry["revision"] = int((state.get("revisions") or {}).get(agent, 0))
 
             update: dict[str, Any] = {
                 "completed_agents": [agent],
                 "artifacts": {**(state.get("artifacts") or {}), **outcome.artifacts},
-                "answers": [{"agent": agent, "answer": outcome.answer}],
                 "trace": outcome.trace,
                 "errors": outcome.errors,
-                "next_agent": "supervisor",
+                "next_agent": "critic",
             }
-            return Command(goto="supervisor", update=update)
+
+            if is_revision:
+                # 修订版要**替换**旧结论，否则最终答案里会出现自相矛盾的两段
+                previous = [
+                    dict(section)
+                    for section in (state.get("answers") or [])
+                    if section.get("agent") != agent
+                ]
+                update["answers"] = Overwrite([*previous, entry])
+            else:
+                update["answers"] = [entry]
+
+            return Command(goto="critic", update=update)
 
         expert_node.__name__ = f"expert_{agent}"
         return expert_node
+
+    # ------------------------------------------------------------------
+    async def critic(state: FinState) -> Any:
+        """审查刚产出的结论：能不能直接交付？
+
+        这是「多空辩论」的低成本版本——不加第二个写作 Agent，只在结论后面加一道结构化
+        检查。``revise`` 会把意见打回原专家返工，返工次数由 ``max_revisions`` 封顶。
+        """
+
+        from langgraph.types import Command
+
+        answers = state.get("answers") or []
+        if not answers:
+            return Command(goto="supervisor", update={})
+
+        last = answers[-1]
+        agent = str(last.get("agent") or "")
+        answer = str(last.get("answer") or "")
+        if not agent or not answer.strip():
+            return Command(goto="supervisor", update={})
+
+        question = state.get("question") or ""
+        trace = [item for item in (state.get("trace") or []) if item.get("agent") == agent]
+        tool_calls = sum(1 for item in trace if item.get("ok"))
+        evidence = " ".join(str(item.get("preview") or "") for item in trace)
+        others = [item for item in answers if item.get("agent") != agent]
+
+        model = get_model()
+        if model is None:
+            result = review(
+                answer,
+                agent=agent,
+                question=question,
+                tool_calls=tool_calls,
+                evidence=evidence,
+                other_answers=others,
+            )
+        else:
+            result = await review_with_llm(
+                model,
+                answer,
+                agent=agent,
+                question=question,
+                tool_summary=summarise_tools(trace),
+                other_answers=others,
+                tool_calls=tool_calls,
+                evidence=evidence,
+            )
+
+        revisions = dict(state.get("revisions") or {})
+        used = int(revisions.get(agent, 0))
+        budget_left = used < settings.max_revisions
+        revisable = agent in REVISABLE_AGENTS and budget_left
+        wants_revision = result.verdict == "revise"
+
+        if wants_revision and not revisable:
+            # 记录但不返工：额度用尽，或这个专家有副作用（持仓/预警重跑会重复下单）
+            reason = "已达修订上限" if agent in REVISABLE_AGENTS else "该专家有副作用，不重跑"
+            result.issues.append(
+                {
+                    "type": "note",
+                    "label": "未返工",
+                    "detail": f"审查建议返工，但{reason}；以上问题保留提示",
+                    "severity": "medium",
+                }
+            )
+            wants_revision = False
+
+        if wants_revision:
+            revisions[agent] = used + 1
+
+        label = AGENT_LABELS.get(agent, agent)
+        payload = {
+            "agent": agent,
+            "label": label,
+            "verdict": "revise" if wants_revision else "pass",
+            "issues": result.issues,
+            "revision": revisions.get(agent, used) if wants_revision else used,
+            "source": result.source,
+        }
+
+        # 让前端实时看到审查结论（含「分歧信号」这类不阻断交付的提示）
+        stream_writer()(
+            {
+                "event": "critic",
+                "agent": agent,
+                "label": label,
+                "verdict": payload["verdict"],
+                "issues": result.issues,
+            }
+        )
+
+        log.info(
+            "审查 %s：%s（%d 条意见，来源=%s）",
+            agent,
+            payload["verdict"],
+            len(result.issues),
+            result.source,
+        )
+
+        log_entry = {
+            "step": "critic",
+            "agent": agent,
+            "label": label,
+            "verdict": payload["verdict"],
+            "issues": result.issues,
+        }
+
+        if wants_revision:
+            return Command(
+                goto=agent,
+                update={
+                    "critique": payload,
+                    "revisions": revisions,
+                    "decision_log": [log_entry],
+                },
+            )
+
+        return Command(
+            goto="supervisor",
+            update={"critique": payload, "decision_log": [log_entry]},
+        )
+
+    # ------------------------------------------------------------------
+    async def risk_guard(state: FinState) -> dict[str, Any]:
+        """确定性护栏：在交付前把结论过一遍硬规则。
+
+        刻意不用 LLM —— 「画像保守却建议加杠杆」这种问题是规则判断，不是推理问题。
+        让概率模型去决定要不要拦自己，既不可靠也不可审计。
+        """
+
+        body = _compose_answer(state)
+        if not settings.risk_guard_enabled or not body.strip():
+            return {"answer": body}
+
+        outcome = guard(
+            body,
+            profile=state.get("user_profile") or {},
+            held_codes=held_codes_from(state.get("artifacts")),
+            provider=settings.provider,
+        )
+        if not outcome.flags:
+            return {"answer": outcome.text}
+
+        stream_writer()(
+            {
+                "event": "risk",
+                "flags": outcome.flags,
+                "actions": outcome.actions,
+                "blocked": outcome.blocked,
+            }
+        )
+
+        return {
+            "answer": outcome.text,
+            "risk_flags": outcome.flags,
+            "decision_log": [
+                {
+                    "step": "risk",
+                    "label": AGENT_LABELS["risk_guard"],
+                    "flags": outcome.flags,
+                    "actions": outcome.actions,
+                }
+            ],
+        }
 
     # ------------------------------------------------------------------
     async def save_memory(state: FinState) -> dict[str, Any]:
@@ -296,33 +491,10 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
 
     # ------------------------------------------------------------------
     async def finalize(state: FinState) -> dict[str, Any]:
-        """汇总最终答案，并结束本轮的消息列表。"""
+        """收尾：确定最终正文，并把它作为 AI 消息写进会话历史。"""
 
-        sections = [
-            _strip_marker(section.get("answer", ""))
-            for section in (state.get("answers") or [])
-            if section.get("answer")
-        ]
-        errors = [error for error in (state.get("errors") or []) if error]
-
-        profile_updates = state.get("profile_updates") or {}
-
-        if sections:
-            body = "\n\n---\n\n".join(sections) if len(sections) > 1 else sections[0]
-        elif profile_updates:
-            body = _memory_acknowledgement(profile_updates)
-        else:
-            body = _apology(state)
-
-        if errors and not sections:
-            body += "\n\n_技术细节：\n" + "\n".join(f"- {error}" for error in errors[:5]) + "_"
-
-        if profile_updates and sections:
-            body += (
-                "\n\n_已更新你的偏好记忆："
-                + "、".join(f"{key}={value}" for key, value in profile_updates.items())
-                + "_"
-            )
+        # risk_guard 可能已经改写过正文（风控拦截），优先用它的结果
+        body = state.get("answer") or _compose_answer(state)
 
         return {
             "answer": body,
@@ -330,52 +502,23 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
             "next_agent": "finish",
         }
 
-    def _memory_acknowledgement(updates: dict[str, Any]) -> str:
-        """纯偏好陈述的一轮没有专家答案，改为给出确认。"""
-
-        labels = {
-            "risk_tolerance": "风险偏好",
-            "investment_horizon": "投资周期",
-            "favorite_sectors": "偏好板块",
-            "avoid_sectors": "回避板块",
-            "investment_style": "投资风格",
-        }
-        rows = [
-            [labels.get(key, key), "、".join(value) if isinstance(value, list) else str(value)]
-            for key, value in updates.items()
-        ]
-        table = "| 项目 | 记录值 |\n| --- | --- |\n" + "\n".join(
-            f"| {row[0]} | {row[1]} |" for row in rows
-        )
-        return (
-            "已更新你的投资偏好档案，之后的分析和推荐都会参考这些设置。\n\n"
-            f"{table}\n\n"
-            "这些偏好会跨会话保留。想看效果可以说「按我的偏好推荐几只股票」。"
-        )
-
-    def _apology(state: FinState) -> str:
-        errors = [error for error in (state.get("errors") or []) if error]
-        if errors:
-            return "抱歉，这个请求没有完成。\n\n" + "\n".join(f"- {error}" for error in errors[:5])
-        return (
-            "抱歉，我没有理解这个请求。可以试试：\n\n"
-            "- 「贵州茅台近一年走势和估值」\n"
-            "- 「筛选 PE 小于 15、市值大于 500 亿的银行股」\n"
-            "- 「用 MACD 策略回测中信证券近一年」\n"
-            "- 「我 10.5 元买了 1000 股平安银行」\n"
-            "- 「茅台涨到 2000 元提醒我」"
-        )
-
     def _may_continue(question: str, completed: list[str]) -> bool:
-        """Does the request plausibly need a *second* expert?
+        """这一轮是否还该再派一个专家？
 
         A naive "any other agent scored above zero" test produces false follow-ups:
         "用 MACD 策略回测 X" also matches the analyst's `macd` keyword, so the
         supervisor would re-run the analyst on the same symbol. Require the runner-up
         to be a substantial fraction of the winning score instead.
+
+        「深度分析」是显式例外：用户明确要求两个维度，就把另一个分析师补上。
         """
 
         from finagent.graph.intents import classify_candidates
+
+        if wants_deep_analysis(question):
+            for analyst in ("fundamental_analyst", "technical_analyst"):
+                if analyst not in completed:
+                    return True
 
         ranked = classify_candidates(question)
         if not ranked:
@@ -394,12 +537,89 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
     nodes: dict[str, Callable[..., Any]] = {
         "load_memory": load_memory,
         "supervisor": supervisor,
+        "critic": critic,
+        "risk_guard": risk_guard,
         "save_memory": save_memory,
         "finalize": finalize,
     }
     for agent in EXPERT_AGENTS:
         nodes[agent] = make_expert_node(agent)
     return nodes
+
+
+# ----------------------------------------------------------------------
+def _memory_acknowledgement(updates: dict[str, Any]) -> str:
+    """纯偏好陈述的一轮没有专家答案，改为给出确认。"""
+
+    labels = {
+        "risk_tolerance": "风险偏好",
+        "investment_horizon": "投资周期",
+        "favorite_sectors": "偏好板块",
+        "avoid_sectors": "回避板块",
+        "investment_style": "投资风格",
+    }
+    rows = [
+        [labels.get(key, key), "、".join(value) if isinstance(value, list) else str(value)]
+        for key, value in updates.items()
+    ]
+    table = "| 项目 | 记录值 |\n| --- | --- |\n" + "\n".join(
+        f"| {row[0]} | {row[1]} |" for row in rows
+    )
+    return (
+        "已更新你的投资偏好档案，之后的分析和推荐都会参考这些设置。\n\n"
+        f"{table}\n\n"
+        "这些偏好会跨会话保留。想看效果可以说「按我的偏好推荐几只股票」。"
+    )
+
+
+def _apology(state: FinState) -> str:
+    errors = [error for error in (state.get("errors") or []) if error]
+    if errors:
+        return "抱歉，这个请求没有完成。\n\n" + "\n".join(f"- {error}" for error in errors[:5])
+    return (
+        "抱歉，我没有理解这个请求。可以试试：\n\n"
+        "- 「贵州茅台近一年走势和估值」\n"
+        "- 「筛选 PE 小于 15、市值大于 500 亿的银行股」\n"
+        "- 「用 MACD 策略回测中信证券近一年」\n"
+        "- 「我 10.5 元买了 1000 股平安银行」\n"
+        "- 「茅台涨到 2000 元提醒我」"
+    )
+
+
+# ----------------------------------------------------------------------
+def _compose_answer(state: FinState) -> str:
+    """把各专家的结论拼成交付给用户的正文。
+
+    单独抽出来是因为有两个节点要用它：``risk_guard`` 要在交付前审阅正文，
+    ``finalize`` 要在没被改写过时自己拼一份。
+    """
+
+    sections = [
+        _strip_marker(section.get("answer", ""))
+        for section in (state.get("answers") or [])
+        if section.get("answer")
+    ]
+    errors = [error for error in (state.get("errors") or []) if error]
+    profile_updates = state.get("profile_updates") or {}
+
+    if sections:
+        body = "\n\n---\n\n".join(sections) if len(sections) > 1 else sections[0]
+    elif profile_updates:
+        body = _memory_acknowledgement(profile_updates)
+    else:
+        body = _apology(state)
+
+    if errors and not sections:
+        body += "\n\n_技术细节：\n" + "\n".join(f"- {error}" for error in errors[:5]) + "_"
+
+    if profile_updates and sections:
+        body += (
+            "\n\n_已更新你的偏好记忆："
+            + "、".join(f"{key}={value}" for key, value in profile_updates.items())
+            + "_"
+        )
+
+    return body
 
 
 # ----------------------------------------------------------------------

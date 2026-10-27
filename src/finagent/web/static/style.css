@@ -192,6 +192,13 @@ details.trace[open] > summary { border-bottom: 1px solid var(--border); }
 .trace-line .tool { color: var(--text); font-family: var(--mono); font-size: 12px; }
 .trace-line .ok { color: var(--ok); }
 .trace-line .err { color: var(--err); }
+.trace-line .dec-mark { width: 14px; flex: 0 0 14px; text-align: center; font-size: 12px; }
+.trace-line .dec-head { color: var(--text); font-weight: 600; white-space: nowrap; }
+.trace-line .dec-route { color: var(--accent); }
+.trace-line .dec-revise { color: var(--warn); font-weight: 700; }
+.trace-line .dec-risk { color: var(--err); }
+details.trace.decision { background: rgba(37, 99, 235, 0.035); border-color: rgba(37, 99, 235, 0.2); }
+
 .trace-line .args { color: #98a1b2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .body-text { line-height: 1.78; font-size: 14.8px; word-wrap: break-word; color: var(--text); }

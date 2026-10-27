@@ -109,16 +109,19 @@ def _wants_index(question: str) -> bool:
 
 
 # ----------------------------------------------------------------------
-# 1. 行情分析专家
+# 1a. 基本面分析专家（估值 / 财报 / 宏观 / 指数）
 # ----------------------------------------------------------------------
-async def analyse(question: str, runner: ToolRunner) -> ExpertResult:
+async def analyse_fundamental(
+    question: str, runner: ToolRunner, *, critique: dict[str, Any] | None = None
+) -> ExpertResult:
+    """只看估值、财务、宏观与指数——刻意不碰 K 线。"""
+
     artifacts: dict[str, Any] = {}
     errors: list[str] = []
 
     time_out = await runner.call("get_current_time")
     meta = time_out.data if time_out.ok else {}
     as_of = meta.get("latest_trading_day") or cal.format_date(cal.latest_trading_day())
-    window = extract_window(question)
     sections: list[str] = []
 
     # 宏观 -------------------------------------------------------------
@@ -145,7 +148,10 @@ async def analyse(question: str, runner: ToolRunner) -> ExpertResult:
         else:
             errors.append(out.error or "macro unavailable")
         return _result(
-            "\n\n".join(sections) or _failure_message(errors), "analyst", artifacts, errors
+            "\n\n".join(sections) or _failure_message(errors),
+            "fundamental_analyst",
+            artifacts,
+            errors,
         )
 
     # 指数 -------------------------------------------------------------
@@ -155,14 +161,14 @@ async def analyse(question: str, runner: ToolRunner) -> ExpertResult:
 
     if not symbols:
         return _result(
-            "请告诉我要分析的具体标的（例如：贵州茅台、600519.SH，或上证指数）。",
-            "analyst",
+            "请告诉我要看基本面的具体标的（例如：贵州茅台、600519.SH）。",
+            "fundamental_analyst",
             artifacts,
             errors,
         )
 
     for code in symbols[:3]:
-        block, block_artifacts, block_errors = await _analyse_one(code, window, runner)
+        block, block_artifacts, block_errors = await _fundamental_one(code, runner)
         errors.extend(block_errors)
         if block:
             sections.append(block)
@@ -170,16 +176,97 @@ async def analyse(question: str, runner: ToolRunner) -> ExpertResult:
 
     label = AGENT_LABELS.get(runner.agent, runner.agent)
     header = f"_数据截至 {as_of}（{label}，确定性分析器）_\n"
-    return _result(header + "\n\n".join(sections), "analyst", artifacts, errors)
+    body = header + "\n\n".join(sections)
+    return _result(body, "fundamental_analyst", artifacts, errors)
 
 
-async def _analyse_one(
+async def _fundamental_one(code: str, runner: ToolRunner) -> tuple[str, dict[str, Any], list[str]]:
+    errors: list[str] = []
+    facts: dict[str, Any] = {}
+    symbol = resolve(code)
+    head = f"### {symbol.name if symbol else display_name(code)}（{code}）基本面"
+
+    valuation = await runner.call("get_daily_basic", ts_code=code, limit=1)
+    valuation_line = None
+    if valuation.ok:
+        latest = (valuation.data.get("rows") or [{}])[0]
+        facts["valuation"] = latest
+        mv = latest.get("total_mv")
+        mv_yi = f"{float(mv) / 10000.0:,.1f} 亿元" if isinstance(mv, (int, float)) else "—"
+        valuation_line = (
+            f"- 估值：PE **{money(latest.get('pe'))}** / PB **{money(latest.get('pb'))}**"
+            f" / 总市值 {mv_yi}"
+        )
+    else:
+        errors.append(f"{code}: {valuation.error}")
+
+    income = await runner.call("get_income_statement", ts_code=code, limit=4)
+    income_line = None
+    if income.ok:
+        rows = income.data.get("rows") or []
+        if rows:
+            latest = rows[0]
+            facts["income"] = latest
+            income_line = (
+                f"- 财报：营收 {money(latest.get('revenue'))} 亿元"
+                f" / 净利润 {money(latest.get('net_profit'))} 亿元"
+                f"（报告期 {latest.get('end_date', '—')}）"
+            )
+
+    lines = [head, valuation_line, income_line]
+    body = "\n".join(line for line in lines if line)
+    return body, {code: facts}, errors
+
+
+# ----------------------------------------------------------------------
+# 1b. 技术面分析专家（量价 / 指标 / 形态 / 资金）
+# ----------------------------------------------------------------------
+async def analyse_technical(
+    question: str, runner: ToolRunner, *, critique: dict[str, Any] | None = None
+) -> ExpertResult:
+    """只看量价、指标、形态与资金——刻意不碰财报与估值。"""
+
+    artifacts: dict[str, Any] = {}
+    errors: list[str] = []
+
+    time_out = await runner.call("get_current_time")
+    meta = time_out.data if time_out.ok else {}
+    as_of = meta.get("latest_trading_day") or cal.format_date(cal.latest_trading_day())
+    window = extract_window(question)
+    sections: list[str] = []
+
+    symbols = extract_symbols(question)
+    if _wants_index(question) and not symbols:
+        symbols = ["000001.SH"]
+
+    if not symbols:
+        return _result(
+            "请告诉我要做技术分析的具体标的（例如：贵州茅台、600519.SH）。",
+            "technical_analyst",
+            artifacts,
+            errors,
+        )
+
+    for code in symbols[:3]:
+        block, block_artifacts, block_errors = await _technical_one(code, window, runner)
+        errors.extend(block_errors)
+        if block:
+            sections.append(block)
+        artifacts.setdefault("symbols", {}).update(block_artifacts)
+
+    label = AGENT_LABELS.get(runner.agent, runner.agent)
+    header = f"_数据截至 {as_of}（{label}，确定性分析器）_\n"
+    body = header + "\n\n".join(sections)
+    return _result(body, "technical_analyst", artifacts, errors)
+
+
+async def _technical_one(
     code: str, window, runner: ToolRunner
 ) -> tuple[str, dict[str, Any], list[str]]:
     errors: list[str] = []
     facts: dict[str, Any] = {}
     symbol = resolve(code)
-    head = f"### {symbol.name if symbol else display_name(code)}（{code}）"
+    head = f"### {symbol.name if symbol else display_name(code)}（{code}）技术面"
 
     quote = await runner.call("get_realtime_price", ts_code=code)
     price_line = None
@@ -207,18 +294,6 @@ async def _analyse_one(
     else:
         errors.append(f"{code}: {history.error}")
 
-    valuation = await runner.call("get_daily_basic", ts_code=code, limit=1)
-    valuation_line = None
-    if valuation.ok:
-        latest = (valuation.data.get("rows") or [{}])[0]
-        facts["valuation"] = latest
-        mv = latest.get("total_mv")
-        mv_yi = f"{float(mv) / 10000.0:,.1f} 亿元" if isinstance(mv, (int, float)) else "—"
-        valuation_line = (
-            f"- 估值：PE **{money(latest.get('pe'))}** / PB **{money(latest.get('pb'))}**"
-            f" / 总市值 {mv_yi}"
-        )
-
     indicators = await runner.call("compute_indicators", ts_code=code, rows=1)
     indicator_line = None
     if indicators.ok:
@@ -243,13 +318,22 @@ async def _analyse_one(
         else:
             pattern_line = "- 形态：当前无明确的交叉或超买超卖形态"
 
-    lines = [head, price_line, range_line, valuation_line, indicator_line, pattern_line]
+    flow = await runner.call("get_moneyflow", ts_code=code, limit=3)
+    flow_line = None
+    if flow.ok:
+        rows = flow.data.get("rows") or []
+        if rows:
+            latest = rows[0]
+            facts["moneyflow"] = latest
+            flow_line = f"- 资金：主力净流入 {money(latest.get('net_amount'))} 万元"
+
+    lines = [head, price_line, range_line, indicator_line, pattern_line, flow_line]
     body = "\n".join(line for line in lines if line)
 
     if facts.get("patterns") and facts["patterns"].get("patterns"):
         names = [PATTERN_LABELS_ZH.get(p, p) for p in facts["patterns"]["patterns"]]
         body += f"\n\n**结论**：{code} 当前出现 {'、'.join(names)}，"
-        body += "可作为关注信号，但需结合成交量和板块环境确认。"
+        body += "可作为关注信号，但需结合成交量和板块环境确认；技术信号不预测基本面。"
     return body, {code: facts}, errors
 
 
@@ -684,18 +768,46 @@ def _result(answer: str, agent: str, artifacts: dict[str, Any], errors: list[str
 
 #: 专家节点使用的分发表。
 HANDLERS = {
-    "analyst": analyse,
+    "fundamental_analyst": analyse_fundamental,
+    "technical_analyst": analyse_technical,
     "stock_picker": pick_stocks,
     "backtest": backtest,
     "portfolio": manage_portfolio,
     "alert": manage_alerts,
 }
 
+#: 纯分析型专家（无副作用），返工时可以安全重跑。
+_ANALYSIS_AGENTS = ("fundamental_analyst", "technical_analyst", "stock_picker", "backtest")
 
-async def run(agent: str, question: str, runner: ToolRunner) -> ExpertResult:
+
+def _with_revision_note(answer: str, critique: dict[str, Any] | None) -> str:
+    """返工时在结论前加一行「已按审查意见修订」，让用户看得见这版是重做的。
+
+    确定性路径没有语言模型可以改写，所以它实际做的是**重新取数**（口径与上一版一致），
+    这里只负责把「这是第几版」说清楚，避免和上一版混淆。
+    """
+
+    if not critique or not critique.get("issues"):
+        return answer
+    count = int(critique.get("revision") or 1)
+    note = f"> 已按审查意见修订（第 {count + 1} 版），重新核对了下列问题涉及的取数口径。\n\n"
+    return note + answer
+
+
+async def run(
+    agent: str,
+    question: str,
+    runner: ToolRunner,
+    *,
+    critique: dict[str, Any] | None = None,
+) -> ExpertResult:
     handler = HANDLERS.get(agent)
     if handler is None:
         return ExpertResult(
             answer=f"未实现的分析器：{agent}", agent=agent, errors=[f"no handler for {agent}"]
         )
-    return await handler(question, runner)
+
+    result = await handler(question, runner)
+    if agent in _ANALYSIS_AGENTS:
+        result.answer = _with_revision_note(result.answer, critique)
+    return result

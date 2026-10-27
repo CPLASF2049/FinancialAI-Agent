@@ -3,19 +3,26 @@
 拓扑::
 
     START
-      └─ load_memory         从 LangGraph store 注入画像
+      └─ load_memory          从 LangGraph store 注入画像
            └─ supervisor      Command(goto=<专家>) | Command(goto="save_memory")
-                ├─ stock_picker ─┐
-                ├─ analyst       │  Command(goto="supervisor")  ← 交回去再分发
-                ├─ backtest      │，或者收尾
-                ├─ portfolio     │
-                └─ alert        ─┘
-           └─ save_memory     持久化本轮学到的偏好
-                └─ finalize   汇总答案，追加 AI 消息
-                     └─ END
+                ├─ stock_picker ────────┐
+                ├─ fundamental_analyst  │  每个专家产出结论后都进审查者
+                ├─ technical_analyst    │
+                ├─ backtest             │
+                ├─ portfolio            │
+                └─ alert ───────────────┘
+                     └─ critic       pass → supervisor ｜ revise → 打回该专家返工
+                          └─ supervisor …（受 max_agent_hops 限制）
+           └─ save_memory        持久化本轮学到的偏好
+                └─ risk_guard    确定性护栏：偏好冲突/强指令/来源标注
+                     └─ finalize 汇总答案，追加 AI 消息
+                          └─ END
 
-Supervisor 一轮内可以连发多个专家（受 ``max_agent_hops`` 限制），「回测茅台，再看看
-我的持仓」这类复合请求就是这样被回答的，不需要另写规划器。
+三个新增环节各自的职责边界很清楚：
+
+* **critic** 只会说「能不能交付」，不写正文；返工次数由 ``max_revisions`` 封顶。
+* **risk_guard** 不推理，只跑规则；它的输出可审计、可单测。
+* 专家本身不关心审查与风控，它们在 ``Command(goto="critic")`` 之后就退出舞台了。
 """
 
 from __future__ import annotations
@@ -52,6 +59,8 @@ class TurnResult:
     artifacts: dict[str, Any] = field(default_factory=dict)
     profile_updates: dict[str, Any] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    decisions: list[dict[str, Any]] = field(default_factory=list)
+    risk_flags: list[dict[str, Any]] = field(default_factory=list)
     user_id: str = "default"
     thread_id: str = "cli"
 
@@ -64,6 +73,8 @@ class TurnResult:
             "tool_calls": len(self.trace),
             "profile_updates": self.profile_updates,
             "errors": self.errors,
+            "decisions": self.decisions,
+            "risk_flags": self.risk_flags,
             "user_id": self.user_id,
             "thread_id": self.thread_id,
         }
@@ -80,14 +91,20 @@ def build_graph(resources: GraphResources, *, checkpointer: Any = None) -> Any:
     graph.add_node("supervisor", nodes["supervisor"])
     for agent in EXPERT_AGENTS:
         graph.add_node(agent, nodes[agent])
+    graph.add_node("critic", nodes["critic"])
     graph.add_node("save_memory", nodes["save_memory"])
+    graph.add_node("risk_guard", nodes["risk_guard"])
     graph.add_node("finalize", nodes["finalize"])
 
     graph.add_edge(START, "load_memory")
     graph.add_edge("load_memory", "supervisor")
-    graph.add_edge("save_memory", "finalize")
+    graph.add_edge("save_memory", "risk_guard")
+    graph.add_edge("risk_guard", "finalize")
     graph.add_edge("finalize", END)
 
+    # 专家 / 审查者之间的走向完全由 `Command(goto=...)` 决定。
+    # 注意：**不要**再给它们加静态边 —— 静态边和 Command 会同时生效，
+    # 于是 critic 会同时扇出到所有专家，多个专家在同一超步里写 `artifacts` 直接冲突。
     return graph.compile(checkpointer=checkpointer)
 
 
@@ -108,8 +125,12 @@ def _reset_turn(load_memory):
             "answers": Overwrite([]),
             "trace": Overwrite([]),
             "errors": Overwrite([]),
+            "decision_log": Overwrite([]),
+            "risk_flags": Overwrite([]),
             "artifacts": {},
             "profile_updates": {},
+            "critique": {},
+            "revisions": {},
             "agent_hops": 0,
             "next_agent": "supervisor",
             "route_reason": "",
@@ -326,6 +347,8 @@ def _to_turn_result(
         artifacts=dict(state.get("artifacts") or {}),
         profile_updates=dict(state.get("profile_updates") or {}),
         errors=list(state.get("errors") or []),
+        decisions=list(state.get("decision_log") or []),
+        risk_flags=list(state.get("risk_flags") or []),
         user_id=user_id,
         thread_id=thread_id,
     )

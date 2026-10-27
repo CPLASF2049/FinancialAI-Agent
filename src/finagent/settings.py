@@ -117,6 +117,18 @@ class Settings(BaseSettings):
         validation_alias="FINAGENT_MAX_AGENT_HOPS",
         description="Upper bound on supervisor -> expert hand-offs per user turn.",
     )
+    #: 每个专家最多被审查者打回返工几次。0 表示只审不返工。
+    max_revisions: int = Field(
+        default=1,
+        validation_alias="FINAGENT_MAX_REVISIONS",
+        description="每个专家被 critic 打回返工的最大次数。",
+    )
+    #: 交付前的确定性风控护栏开关。
+    risk_guard_enabled: bool = Field(
+        default=True,
+        validation_alias="FINAGENT_RISK_GUARD",
+        description="是否启用 risk_guard（确定性规则护栏）。",
+    )
 
     # ---------------- 存储 ----------------
     #: 用普通字符串存放：``Path("")`` 会解析成当前目录，所以 .env 里留空的

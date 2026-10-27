@@ -82,36 +82,104 @@ _INTENT_KEYWORDS: dict[str, tuple[tuple[str, float], ...]] = {
         ("符合条件", 2.0),
         ("龙头", 1.5),
     ),
-    "analyst": (
-        ("行情", 2.0),
-        ("分析", 1.5),
-        ("指标", 2.0),
-        ("财务", 2.0),
-        ("估值", 2.0),
+    # 基本面：估值、财报、宏观、指数对比
+    "fundamental_analyst": (
+        ("估值", 2.5),
+        ("市盈率", 2.5),
+        ("市净率", 2.5),
+        ("pe", 1.5),
+        ("pb", 1.5),
+        ("财报", 2.5),
+        ("财务", 2.5),
+        ("利润", 2.0),
+        ("营收", 2.0),
+        ("净利润", 2.5),
+        ("毛利率", 2.5),
+        ("基本面", 2.5),
         ("宏观", 2.5),
-        ("走势", 2.0),
-        ("股价", 1.5),
-        ("市盈率", 2.0),
-        ("市净率", 2.0),
+        ("gdp", 2.0),
+        ("cpi", 2.0),
+        ("市值", 2.0),
+        ("低估", 2.0),
+        ("高估", 2.0),
+        ("分红", 2.0),
+        ("股息", 2.0),
+    ),
+    # 技术面：量价、指标、形态、资金
+    "technical_analyst": (
+        ("行情", 2.0),
+        ("走势", 2.5),
+        ("技术面", 2.5),
+        ("技术分析", 2.5),
+        ("指标", 2.5),
         ("macd", 2.5),
         ("rsi", 2.0),
         ("kdj", 2.0),
-        ("财报", 2.0),
-        ("技术面", 2.0),
-        ("基本面", 2.0),
-        ("龙虎榜", 2.5),
+        ("布林", 2.0),
+        ("均线", 2.0),
+        ("k线", 2.0),
+        ("形态", 2.0),
+        ("金叉", 2.5),
+        ("死叉", 2.5),
+        ("超买", 2.0),
+        ("超卖", 2.0),
+        ("突破", 1.5),
         ("资金流", 2.5),
+        ("主力", 2.0),
+        ("龙虎榜", 2.5),
+        ("涨跌停", 2.0),
+        ("成交量", 2.0),
+        ("量价", 2.5),
         ("概念", 1.5),
-        ("行业", 1.5),
+    ),
+    # 泛化提问：两者都像，默认给技术面（量价是最常被问的），
+    # 但「深度/全面分析」会让 Supervisor 把两个都派出去。
+    "analyst:general": (
+        ("股价", 1.5),
         ("多少", 1.0),
         ("怎么样", 1.0),
+        ("分析", 1.5),
         ("对比", 1.5),
         ("指数", 1.5),
+        ("行业", 1.5),
     ),
 }
 
+#: ``analyst:general`` 是给「泛化提问」用的虚拟桶，命中后落到技术面分析师。
+_GENERAL_ALIAS = {"analyst:general": "technical_analyst"}
+
 #: 同分时的优先顺序（越具体的动作越靠前）。
-PRIORITY: tuple[str, ...] = ("alert", "backtest", "portfolio", "stock_picker", "analyst")
+PRIORITY: tuple[str, ...] = (
+    "alert",
+    "backtest",
+    "portfolio",
+    "stock_picker",
+    "fundamental_analyst",
+    "technical_analyst",
+    "analyst:general",
+)
+
+#: 「深度 / 全面分析」这类请求要把两个分析师都派出去。
+DEEP_ANALYSIS_MARKERS: tuple[str, ...] = (
+    "深度分析",
+    "全面分析",
+    "完整分析",
+    "详细分析",
+    "多维度",
+    "各个维度",
+    "基本面和技术面",
+    "技术面和基本面",
+    "值得投资吗",
+    "能不能买",
+    "该不该买",
+)
+
+
+def wants_deep_analysis(text: str) -> bool:
+    """用户是否明确要求「全面/深度」分析（需要两个分析师都上场）。"""
+
+    lowered = (text or "").lower()
+    return any(marker in lowered for marker in DEEP_ANALYSIS_MARKERS)
 
 
 def classify_intent(text: str) -> tuple[str, str]:
@@ -119,7 +187,7 @@ def classify_intent(text: str) -> tuple[str, str]:
 
     ranked = classify_candidates(text)
     if not ranked:
-        return "analyst", "没有明显信号，默认交给分析专家"
+        return "technical_analyst", "没有明显信号，默认交给技术面分析师"
     agent, score, matched = ranked[0]
     return agent, f"匹配关键词 {', '.join(matched[:4])}（得分 {score:g}）"
 
@@ -137,7 +205,8 @@ def classify_candidates(text: str) -> list[tuple[str, float, list[str]]]:
                 total += weight
                 matched.append(keyword)
         if total > 0:
-            ranked.append((agent, total, matched))
+            resolved = _GENERAL_ALIAS.get(agent, agent)
+            ranked.append((resolved, total, matched))
     ranked.sort(key=lambda item: (-item[1], PRIORITY.index(item[0]) if item[0] in PRIORITY else 99))
     return ranked
 
@@ -147,9 +216,17 @@ def classify_next(text: str, completed: Iterable[str]) -> tuple[str, str]:
 
     这正是「回测茅台，再看看我的持仓」这类双专家请求不会在第一个专家上打转的原因：
     第二次调用时第一个已标记为完成，于是把活交给次优匹配。
+
+    「深度分析」类请求例外：它明确要求两个分析师都给意见，所以会把另一个也补上。
     """
 
     done = set(completed)
+
+    if wants_deep_analysis(text):
+        for analyst in ("fundamental_analyst", "technical_analyst"):
+            if analyst not in done:
+                return analyst, "深度分析请求：逐个分析师给意见，再交叉检查"
+
     for agent, score, matched in classify_candidates(text):
         if agent in done:
             continue
