@@ -40,7 +40,7 @@ LLM API Key、不需要联网，就能把界面和 284 个测试跑起来。
 
 ## 三分钟快速开始
 
-已经装好 Python 3.11 的话，四条命令就能跑起来：
+已经装好 Python 3.11 的话，复制粘贴下面几行就能跑起来：
 
 ```bat
 git clone https://github.com/CPLASF2049/FinancialAI-Agent.git
@@ -144,7 +144,7 @@ python -m venv .venv
 
 ## 安装
 
-下面四步都在**项目根目录**（`README.md` 所在目录）里执行。
+下面五步都在**项目根目录**（`README.md` 所在目录）里执行。
 
 ### 第 1 步：拿到代码
 
@@ -652,24 +652,27 @@ finagent-mcp-quant
 python -m finagent.mcp_servers quant
 ```
 
-在 MCP 宿主里注册（注意换成你自己的绝对路径，Windows 反斜杠要写成 `\\`）：
+在 MCP 宿主里注册（**把路径换成你自己机器上的绝对路径**，Windows 反斜杠要写成 `\\`）：
 
 ```json
 {
   "mcpServers": {
     "finagent-market": {
-      "command": "E:\\desktop\\project\\Financial AI Agent\\.venv\\Scripts\\finagent-mcp-market.exe"
+      "command": "C:\\你的路径\\FinancialAI-Agent\\.venv\\Scripts\\finagent-mcp-market.exe"
     },
     "finagent-quant": {
-      "command": "E:\\desktop\\project\\Financial AI Agent\\.venv\\Scripts\\finagent-mcp-quant.exe"
+      "command": "C:\\你的路径\\FinancialAI-Agent\\.venv\\Scripts\\finagent-mcp-quant.exe"
     },
     "finagent-portfolio": {
-      "command": "E:\\desktop\\project\\Financial AI Agent\\.venv\\Scripts\\finagent-mcp-portfolio.exe"
+      "command": "C:\\你的路径\\FinancialAI-Agent\\.venv\\Scripts\\finagent-mcp-portfolio.exe"
     }
   }
 }
 ```
 
+> 不知道自己该填什么？在项目目录里激活虚拟环境后执行
+> `where finagent-mcp-market`（macOS/Linux 用 `which`），把它打印出来的路径填进去。
+>
 > 用完整路径最省事，避免宿主进程找不到 PATH 里的虚拟环境命令。
 > 若宿主需要环境变量，把 `FINAGENT_PROVIDER`、`FINAGENT_TUSHARE_TOKEN` 等一并写进它的 `env` 配置。
 
