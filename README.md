@@ -876,6 +876,21 @@ finagent doctor
 
 之后就不用再管了。还不行的话关掉标签页重新打开，或换个浏览器确认一下。
 
+### `git push` 卡住或 `Connection was reset`
+
+日常使用不需要 git，这一条只在你改完代码想推送时有用。国内网络下往 GitHub 推送经常连不上，
+但 Python 的 HTTP 往往是通的。仓库自带一个小中继，让 git 借 Python 的连接走：
+
+```bat
+:: 终端 A：起中继（只监听 127.0.0.1，只放行 github.com:443）
+python scripts\git_relay.py 8899
+
+:: 终端 B：经中继推送
+git -c http.proxy=http://127.0.0.1:8899 push origin main
+```
+
+推完 Ctrl+C 关掉终端 A。
+
 ### `PermissionError: ... web_threads.json.lock`
 
 会话读写失败、界面点「新建对话」没反应，日志里是这个：
