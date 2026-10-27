@@ -1,0 +1,29 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.uv-cache/
+.pip-cache/
+.pytest_cache/
+pytest-cache-files-*/
+.ruff_cache/
+
+# --- Local runtime state ---
+.finagent-data/
+_scratch/
+_pytest/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.jsonl
+.env
+.env.local
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "finagent-mcp"
+version = "1.0.0"
+description = "面向中国 A 股的智能投研助手：MCP 工具服务器 + LangGraph 多 Agent 调度"
+readme = "README.md"
+# 已验证 3.11。3.14 目前不在支持范围：它的扩展模块 ABI 与 3.11 不兼容，而很多依赖
+# 还没有 cp314 wheel，混装会得到「cannot import name 'ArgsKwargs'」这类难以定位的报错。
+# 用 `uv venv --python 3.11 .venv` 或 `py -3.11 -m venv .venv` 建环境。
+requires-python = ">=3.11,<3.14"
+license = { text = "MIT" }
+authors = [{ name = "Fin-Agent MCP contributors" }]
+keywords = ["mcp", "langgraph", "agents", "tushare", "quant", "finance", "金融", "选股", "回测"]
+
+dependencies = [
+  "mcp>=1.9,<2",
+  "langgraph>=1.0",
+  "langgraph-checkpoint-sqlite>=2.0",
+  "langchain-core>=0.3",
+  "langchain-openai>=0.2",
+  "langchain-mcp-adapters>=0.1",
+  "pandas>=2.0",
+  "numpy>=1.26",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "python-dotenv>=1.0",
+  "httpx>=0.27",
+  "rich>=13.0",
+  "colorama>=0.4.6",
+]
+
+[project.optional-dependencies]
+tushare = ["tushare>=1.4.6"]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+finagent = "finagent.cli:main"
+# 等价别名：两个命令指向同一个入口，方便习惯带连字符的写法。
+fin-agent = "finagent.cli:main"
+finagent-mcp-market = "finagent.mcp_servers.market:main"
+finagent-mcp-quant = "finagent.mcp_servers.quant:main"
+finagent-mcp-portfolio = "finagent.mcp_servers.portfolio:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/finagent"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-p no:cacheprovider"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "B008"]

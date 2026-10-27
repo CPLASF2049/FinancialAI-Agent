@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fin-Agent · 智能投研助手</title>
+<!-- ?v=__ASSET_VERSION__ 由服务端按静态文件的修改时间生成，改完前端不用手动清缓存 -->
+<link rel="stylesheet" href="/static/style.css?v=__ASSET_VERSION__" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📈</text></svg>" />
+</head>
+<body>
+<div class="app" id="app">
+
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <span class="brand-mark">FA</span>
+      <div class="brand-text">
+        <strong>Fin-Agent</strong>
+        <small>智能投研助手</small>
+      </div>
+    </div>
+
+    <button class="new-chat" id="newChat">
+      <svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      新建对话
+    </button>
+
+    <div class="thread-list" id="threadList"></div>
+
+    <div class="sidebar-foot" id="statusPills"></div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn only-mobile" id="toggleSidebar" title="会话列表">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <div class="topbar-title" id="threadTitle">新对话</div>
+      <div class="topbar-actions">
+        <span class="pill" id="providerPill">…</span>
+        <span class="pill action" id="llmPill" title="点这里接入大模型">…</span>
+        <button class="settings-btn" id="openLlm" title="接入大模型">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+            <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z" stroke="currentColor" stroke-width="1.8" fill="none"/>
+            <path d="M19.4 13a7.9 7.9 0 0 0 0-2l2-1.5-2-3.4-2.3.9a7.8 7.8 0 0 0-1.7-1L15 3H9l-.4 2.9a7.8 7.8 0 0 0-1.7 1L4.6 6 2.6 9.5 4.6 11a7.9 7.9 0 0 0 0 2l-2 1.5 2 3.5 2.3-1a7.8 7.8 0 0 0 1.7 1L9 21h6l.4-2.9a7.8 7.8 0 0 0 1.7-1l2.3 1 2-3.5-2-1.6z" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linejoin="round"/>
+          </svg>
+          <span>接入大模型</span>
+        </button>
+      </div>
+    </header>
+
+    <section class="messages" id="messages">
+      <div class="welcome" id="welcome">
+        <div class="welcome-mark">📈</div>
+        <h1>今天想看看什么？</h1>
+        <p>用大白话提问，我会自己挑工具、查数据、算指标，再把结论讲清楚。</p>
+        <div class="suggestions" id="suggestions">
+          <button data-q="贵州茅台现在多少钱？最近一个月的走势和估值怎么样？">查行情与估值</button>
+          <button data-q="帮我筛选市盈率小于 15、市值大于 500 亿的银行股">自然语言选股</button>
+          <button data-q="用 MACD 策略回测中信证券近一年，并和大盘对比">策略回测</button>
+          <button data-q="我以 10.5 元买入 1000 股平安银行，帮我记一下持仓">记一笔持仓</button>
+          <button data-q="茅台涨到 2000 元提醒我">设置价格预警</button>
+          <button data-q="我是保守型投资者，偏好银行和白酒板块">告诉它我的偏好</button>
+        </div>
+      </div>
+    </section>
+
+    <footer class="composer-wrap">
+      <form class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="问点什么…  Enter 发送，Shift+Enter 换行"></textarea>
+        <button type="submit" class="send" id="send" title="发送">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 12l16-8-6 16-2-6-8-2z" fill="currentColor"/></svg>
+        </button>
+        <button type="button" class="stop hidden" id="stop" title="停止">
+          <svg viewBox="0 0 24 24" width="16" height="16"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+        </button>
+      </form>
+      <div class="hint">数据仅供参考，不构成投资建议。</div>
+    </footer>
+  </main>
+</div>
+
+<div class="modal-backdrop hidden" id="llmModal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="llmTitle">
+    <div class="modal-head">
+      <h2 id="llmTitle">接入大模型</h2>
+      <button class="modal-close" id="llmClose" title="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-lead">
+        填好下面的信息点「保存并测试」即可，<strong>不用重启</strong>，也不用改任何文件。
+        没有 Key 时也能用，只是回答会走确定性模板。
+      </p>
+
+      <div class="field">
+        <label for="llmProvider">厂商</label>
+        <select id="llmProvider"></select>
+      </div>
+
+      <div class="field">
+        <label for="llmKey">API Key</label>
+        <div class="key-row">
+          <input id="llmKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-..." />
+          <button type="button" id="llmToggleKey">显示</button>
+        </div>
+        <div class="tip" id="llmKeyTip"></div>
+      </div>
+
+      <div class="field">
+        <label for="llmModel">模型</label>
+        <input id="llmModel" type="text" autocomplete="off" spellcheck="false" placeholder="deepseek-chat" />
+        <div class="tip" id="llmModelTip">留空则用该厂商的默认模型</div>
+      </div>
+
+      <div class="field">
+        <label for="llmBaseUrl">接口地址</label>
+        <input id="llmBaseUrl" type="text" autocomplete="off" spellcheck="false" placeholder="https://api.deepseek.com" />
+        <div class="tip">留空则用默认地址；只有走代理或私有网关时才需要改</div>
+      </div>
+
+      <div class="modal-status" id="llmStatus"></div>
+
+      <details class="modal-advanced">
+        <summary>配置写到哪里</summary>
+        <code id="llmEnvPath">…</code>
+      </details>
+    </div>
+    <div class="modal-foot">
+      <button class="btn-ghost" id="llmCancel">取消</button>
+      <button class="btn-primary" id="llmSave">保存并测试</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js?v=__ASSET_VERSION__"></script>
+</body>
+</html>
