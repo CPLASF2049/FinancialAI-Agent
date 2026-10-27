@@ -207,6 +207,48 @@ def test_chat_rejects_empty_message(client: TestClient) -> None:
     assert response.status_code == 400
 
 
+def test_store_failure_returns_readable_error_not_a_traceback(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """会话存储坏了（例如锁文件删不掉）时，接口要给可读错误，而不是 500 堆栈。
+
+    真正的锁问题现在会降级处理（见 test_store.py），这里兜的是「写入彻底失败」。
+    """
+
+    from finagent.core.store import StoreError
+
+    web = client.app.state.web
+
+    def boom(*args, **kwargs):
+        raise StoreError("无法写入 web_threads.json：拒绝访问")
+
+    monkeypatch.setattr(web.threads, "create", boom)
+    response = client.post("/api/threads")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["error"]
+    assert "hint" in body
+    assert body["detail"]
+
+
+def test_thread_delete_and_read_survive_store_errors(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finagent.core.store import StoreError
+
+    web = client.app.state.web
+    monkeypatch.setattr(
+        web.threads, "delete", lambda *a, **k: (_ for _ in ()).throw(StoreError("locked"))
+    )
+    assert client.delete("/api/threads/whatever").status_code == 503
+
+    monkeypatch.setattr(
+        web.threads, "get", lambda *a, **k: (_ for _ in ()).throw(StoreError("locked"))
+    )
+    assert client.get("/api/threads/whatever").status_code == 503
+
+
 def test_chat_creates_a_thread_when_missing(client: TestClient) -> None:
     events: list[tuple[str, dict]] = []
     with client.stream("POST", "/api/chat", json={"message": "上证指数怎么样"}) as response:

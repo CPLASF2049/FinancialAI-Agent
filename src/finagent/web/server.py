@@ -43,6 +43,7 @@ from starlette.responses import (
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from finagent.core.store import StoreError
 from finagent.graph import FinAgentApp
 from finagent.graph.experts import describe_experts
 from finagent.graph.state import AGENT_LABELS
@@ -236,21 +237,28 @@ async def api_llm(request: Request) -> Response:
 
 async def api_threads(request: Request) -> Response:
     web = state_of(request)
-    if request.method == "POST":
-        created = web.threads.create()
-        return JSONResponse(created, status_code=201)
-    return JSONResponse({"threads": web.threads.list_threads()})
+    try:
+        if request.method == "POST":
+            created = web.threads.create()
+            return JSONResponse(created, status_code=201)
+        return JSONResponse({"threads": web.threads.list_threads()})
+    except StoreError as exc:
+        return _store_error(exc)
 
 
 async def api_thread(request: Request) -> Response:
     web = state_of(request)
     thread_id = request.path_params["thread_id"]
 
-    if request.method == "DELETE":
-        removed = web.threads.delete(thread_id)
-        return JSONResponse({"deleted": removed}, status_code=200 if removed else 404)
+    try:
+        if request.method == "DELETE":
+            removed = web.threads.delete(thread_id)
+            return JSONResponse({"deleted": removed}, status_code=200 if removed else 404)
 
-    record = web.threads.get(thread_id)
+        record = web.threads.get(thread_id)
+    except StoreError as exc:
+        return _store_error(exc)
+
     if record is None:
         return JSONResponse({"error": "会话不存在"}, status_code=404)
     return JSONResponse(
@@ -259,6 +267,20 @@ async def api_thread(request: Request) -> Response:
             "title": record.get("title"),
             "messages": record.get("messages") or [],
         }
+    )
+
+
+def _store_error(exc: Exception) -> Response:
+    """把存储层异常翻成一条能给用户看的错误，而不是一页 traceback。"""
+
+    log.error("会话存储不可用：%s", exc)
+    return JSONResponse(
+        {
+            "error": "无法读写会话记录",
+            "detail": str(exc),
+            "hint": "检查数据目录的权限，或删掉残留的 *.lock 文件后重试",
+        },
+        status_code=503,
     )
 
 
