@@ -41,6 +41,8 @@ def offline_env(monkeypatch: pytest.MonkeyPatch, data_dir: Path) -> Path:
     """Point the whole stack at the offline provider and a scratch data dir."""
 
     monkeypatch.setenv("FINAGENT_PROVIDER", "offline")
+    # .env 里可能写着「必须真实数据」，测试明确要离线 fixture，所以这里覆盖掉
+    monkeypatch.setenv("FINAGENT_REQUIRE_REAL_DATA", "false")
     monkeypatch.setenv("FINAGENT_TUSHARE_TOKEN", "")
     monkeypatch.setenv("FINAGENT_LLM_PROVIDER", "none")
     monkeypatch.setenv("FINAGENT_LLM_API_KEY", "")

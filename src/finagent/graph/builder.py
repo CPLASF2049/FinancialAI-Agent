@@ -35,6 +35,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Overwrite
 
+from finagent.errors import ConfigurationError
 from finagent.graph.mcp_client import Toolkit, open_toolkit
 from finagent.graph.nodes import GraphResources, build_nodes
 from finagent.graph.state import EXPERT_AGENTS, FinState, initial_state
@@ -252,6 +253,16 @@ class FinAgentApp:
             checkpointer=self.checkpointer,
         )
         self._stack = stack
+        log.info(
+            "数据源：%s（%s）",
+            resolved.provider,
+            "真实行情" if resolved.provider != "offline" else "离线演示数据",
+        )
+        if resolved.provider == "offline" and resolved.require_real_data:
+            raise ConfigurationError(
+                "FINAGENT_REQUIRE_REAL_DATA=true，但当前仍是 offline 数据源；"
+                "请设置 FINAGENT_PROVIDER=eastmoney 或 tushare。"
+            )
         log.info(
             "图已就绪：%d 个 MCP 工具（%s），%d 个专家，checkpointer=%s",
             len(toolkit.tools),

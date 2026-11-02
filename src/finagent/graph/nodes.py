@@ -450,6 +450,7 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
                 "label": label,
                 "verdict": payload["verdict"],
                 "issues": result.issues,
+                "revision": payload["revision"],
             }
         )
 

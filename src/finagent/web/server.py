@@ -500,6 +500,8 @@ def _translate_agent_event(
                 "label": event.get("label") or AGENT_LABELS.get(str(event.get("agent")), ""),
                 "verdict": event.get("verdict") or "pass",
                 "issues": event.get("issues") or [],
+                # 第几稿：前端据此清空上一稿的流式文本，避免新旧两版拼在一起
+                "revision": int(event.get("revision") or 0),
             },
         )
     if name == "risk":

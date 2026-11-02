@@ -435,7 +435,12 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     table.add_row("Python", sys.version.split()[0])
     table.add_row("数据目录", str(settings.resolve_data_dir()))
     table.add_row("checkpoint 数据库", str(settings.resolve_checkpoint_path()))
-    table.add_row("行情数据源", settings.provider)
+    table.add_row(
+        "行情数据源",
+        f"{settings.provider}（"
+        + ("真实行情" if settings.provider != "offline" else "离线演示数据")
+        + "）",
+    )
     table.add_row("LLM", f"{llm['provider']} / {llm['model']} ({llm['mode']})")
     table.add_row("最大专家跳转次数", str(settings.max_agent_hops))
     table.add_row(

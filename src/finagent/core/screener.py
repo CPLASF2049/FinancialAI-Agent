@@ -171,7 +171,7 @@ def screen(provider: MarketDataProvider, criteria: ScreenCriteria) -> dict[str, 
             }
         )
 
-    return {
+    payload = {
         "criteria": criteria.describe(),
         "universe_size": total_before,
         "matched": len(frame),
@@ -179,6 +179,16 @@ def screen(provider: MarketDataProvider, criteria: ScreenCriteria) -> dict[str, 
         "results": records,
         "columns": _COLUMN_LABELS,
     }
+    # 数据源可能只拿到部分市场（例如分页请求被限流）。这会让「命中 N 只」偏低，
+    # 所以必须把完整性一并告知，而不是让调用方以为这就是全部。
+    complete = getattr(provider, "last_universe_complete", None)
+    if complete is False:
+        payload["universe_complete"] = False
+        payload["warning"] = (
+            "本次只取到部分市场的股票列表，命中结果可能不完整；"
+            "稍后重试或改用 tushare 数据源可获全量。"
+        )
+    return payload
 
 
 def long_tail(

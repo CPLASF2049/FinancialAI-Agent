@@ -611,6 +611,11 @@
           issues: data.issues,
         });
         state.decisions.push({ step: "critic", ...data });
+        if (data.verdict === "revise") {
+          // 返工 = 这一轮的结论作废。不清空的话，新结论会接在旧结论后面，
+          // 最后 done 再整体覆盖，看起来就像「生成了两遍又被删掉」。
+          beginAttempt(view, (data.revision || 0) + 1);
+        }
         break;
       }
       case "risk": {
@@ -647,6 +652,7 @@
       }
       case "token": {
         thinking.remove();
+        view.bubble.querySelectorAll(".attempt-hint").forEach((n) => n.remove());
         const hint = view.bubble.querySelector('[data-role="tool-hint"]');
         if (hint) hint.remove();
         state.tokens += data.text || "";
@@ -666,6 +672,7 @@
       }
       case "done": {
         thinking.remove();
+        view.bubble.querySelectorAll(".attempt-hint").forEach((n) => n.remove());
         if (!view.decisionBody.children.length && (data.decisions || []).length) {
           data.decisions.forEach((item) =>
             addDecisionLine(view.decision, view.decisionSummary, view.decisionBody, item)
@@ -744,6 +751,22 @@
     span.className = "cursor";
     span.dataset.cursor = "1";
     return span;
+  }
+
+  /* 开始新一稿：清空上一稿的流式文本，并挂一条「正在重做」的提示。
+     返工（critic=revise）后调用，保证一个气泡里只显示**最终那一稿**。 */
+  function beginAttempt(view, attempt) {
+    state.tokens = "";
+    view.text.classList.remove("streaming");
+    view.text.textContent = "";
+    view.bubble.querySelectorAll("[data-role=tool-hint], .attempt-hint").forEach((n) => n.remove());
+
+    const hint = document.createElement("div");
+    hint.className = "thinking attempt-hint";
+    hint.innerHTML =
+      '<span class="dots"><i></i><i></i><i></i></span>' +
+      `<span>审查未通过，正在重做（第 ${attempt} 稿）…</span>`;
+    view.bubble.insertBefore(hint, view.text);
   }
 
   function setStreaming(value) {

@@ -56,6 +56,9 @@ pythonpath = ["src", "tests"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-p no:cacheprovider"
+markers = [
+    "live: 需要联网的用例（默认跳过，设置 FINAGENT_LIVE_TESTS=1 才跑）",
+]
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]

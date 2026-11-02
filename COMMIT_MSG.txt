@@ -1,0 +1,32 @@
+feat: 默认接入真实行情（东方财富，免费免 token）+ 修返工时的重复渲染
+
+一、真实数据源（不需要 token）
+
+新增 providers/eastmoney.py：直接调东方财富公开行情接口，免费、不用注册。
+覆盖日线（前复权）、实时快照、最新估值（PE/PB/市值）、指数、全市场选股池、交易日历；
+利润表 / 宏观 / 资金流 / 龙虎榜 / 涨跌停明确不支持（抛 ProviderUnavailable），
+绝不返回半成品。
+
+Tushare 需要 token 且有积分门槛，所以没把它设成默认；需要财报/宏观时再切过去。
+
+- FINAGENT_PROVIDER 增加 eastmoney，registry/settings 同步
+- .env 设为 eastmoney + FINAGENT_REQUIRE_REAL_DATA=true（后者已存在，现在默认启用）
+- 启动时打印「数据源：xxx（真实行情 / 离线演示数据）」；doctor 同样显示
+- 全市场 5926 只，分页 60 次约 15–20 秒，缓存 10 分钟
+- 分页健壮性：单页退避重试 → 记下失败页 → 循环后补抓两轮 →
+  仍缺页则标记 last_universe_complete=False；选股结果带 warning 说明「可能不完整」
+  （部分市场会静默少报命中数，这是必须说出来的）
+- conftest 里 offline_env 显式关掉 REQUIRE_REAL_DATA，避免 .env 的真实数据要求把测试打死
+
+二、返工时「生成两次又删掉」
+
+根因：返工前那一稿的 token 已经流到前端并累积，返工后的 token 继续往后接，
+最后 done 用最终答案整体覆盖 —— 看起来就是「生成了两遍然后被删掉」。
+
+- critic 事件补 revision 字段（第几稿）
+- 前端收到 verdict=revise 时调用 beginAttempt()：清空流式缓冲与 DOM 文本、
+  挂一条「审查未通过，正在重做（第 N 稿）」提示；token/done 到达时移除该提示
+- 一个气泡只保留最终那一稿
+
+测试：新增 test_eastmoney.py 13 条（字段缩放、万元口径、分页完整性、部分数据警示）。
+全量 389 passed / 1 skipped（联网用例默认跳过）。

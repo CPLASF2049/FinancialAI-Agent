@@ -76,8 +76,9 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 ```
 
-> 没有任何 API Key 也能用——内置离线行情与确定性规划器，界面照常打开、41 个工具照常工作，
-> 只是回答走模板而不是大模型。想接大模型看[配置](#配置)，在界面右上角填 Key 即可。
+> **默认连的是真实行情**：`.env` 里 `FINAGENT_PROVIDER=eastmoney`，走东方财富公开接口，
+> 免费、不需要注册。没有任何 API Key 也能跑——只是不接大模型时，Agent 走确定性规划器，
+> 但数据是真的。想要财报/宏观这类深度数据再配 Tushare。
 
 遇到问题先跑自检，它会把每一项状态列出来：
 
@@ -429,6 +430,34 @@ copy .env.example .env
 > 只接大模型的话，**推荐直接在界面里填**（右上角「接入大模型」），它会自动写好这个
 > `.env` 并立刻生效，见[在界面里接入大模型](#在界面里接入大模型不用改文件不用重启)。
 > 手动改文件适合批量部署或 CI。
+
+### 数据源：默认就是真实行情
+
+| 数据源 | `FINAGENT_PROVIDER` | 需要 token | 覆盖范围 |
+| --- | --- | --- | --- |
+| **东方财富**（默认） | `eastmoney` | **不需要** | 日线、实时报价、PE/PB/市值、指数、全市场选股、交易日历 |
+| Tushare Pro | `tushare` | 需要 | 上面全部 + 财报、宏观、资金流、龙虎榜、涨跌停 |
+| 离线 fixture | `offline` | 不需要 | 合成数据，**只用于测试与演示** |
+
+东方财富这条是**免费**的：直接调公开行情接口，连注册都不用。第一次选股会拉全市场
+（约 5900 只，分页 60 次，约 15 秒），之后 5 分钟内走缓存。
+
+```dotenv
+FINAGENT_PROVIDER=eastmoney
+# 明确禁止「拿演示数据当真实行情」；打开后 provider=offline 会直接报错
+FINAGENT_REQUIRE_REAL_DATA=true
+```
+
+确认配置真的生效（不要猜）：
+
+```bat
+finagent doctor
+:: 行情数据源 │ eastmoney
+
+python -c "from finagent.settings import get_settings; s=get_settings(); print(s.provider); assert s.provider != 'offline'"
+```
+
+环境变量与 `.env` 都设了值时，**环境变量优先**。排查「改了没生效」先看这一条。
 
 ### 接入 DeepSeek（大模型）
 
@@ -918,7 +947,7 @@ Critic 觉得不对、反复打回，最后烧光 token 还是没结果。这里
 ## 开发与测试
 
 ```bat
-:: 全量测试（367 个，约 57 秒，不联网、不需要凭据）
+:: 全量测试（389 个，约 90 秒；默认不联网）
 pytest -q
 
 :: 只跑某一层
@@ -951,6 +980,7 @@ ruff format --check src tests
 | `test_debate.py` | 返工链路：替换旧答案、返工次数封顶、副作用专家不重跑 |
 | `test_store.py` | JSON 存储的锁：只读残留锁清理、锁路径异常时降级、并发不丢更新 |
 | `test_termination.py` | 终止性：三重预算各自生效、返工不乒乓、截断后仍有回答 |
+| `test_eastmoney.py` | 东方财富数据源：字段缩放、万元口径、分页与完整性标记（含 1 条需联网的 live 用例）|
 
 改了 MCP 工具之后记得重新生成文档：
 

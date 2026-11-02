@@ -21,6 +21,10 @@ def build_provider(settings: Settings | None = None) -> MarketDataProvider:
         from finagent.providers.tushare import TushareProvider
 
         return TushareProvider(resolved.tushare_token, requests_per_second=resolved.tushare_rps)
+    if resolved.provider == "eastmoney":
+        from finagent.providers.eastmoney import EastmoneyProvider
+
+        return EastmoneyProvider()
     if resolved.provider == "offline":
         if resolved.require_real_data:
             raise ConfigurationError(
@@ -36,7 +40,7 @@ def build_provider(settings: Settings | None = None) -> MarketDataProvider:
         return OfflineProvider()
     raise ConfigurationError(
         f"未知数据源 '{resolved.provider}'。",
-        hint="把 FINAGENT_PROVIDER 设为 'offline' 或 'tushare'。",
+        hint="把 FINAGENT_PROVIDER 设为 eastmoney / tushare / offline 之一。",
     )
 
 
