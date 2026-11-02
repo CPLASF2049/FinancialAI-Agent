@@ -387,6 +387,28 @@ alert      → alert
 上下文只传 3 次，每次推理仍然只看 7–10 个工具。intents.researcher_passes() /
 quant_passes() 按关键词决定这一轮跑哪几个子职责；「深度分析」会强制基本面 + 技术面。
 
+### 终止性：四个独立的刹车
+
+多 Agent 图最容易出的事故是「停不下来」。只靠 `max_agent_hops` 不够——它数的是跳转次数，
+而真正烧钱的是**每次跳转里的 LLM 调用**，模型慢的时候 4 次跳转能跑好几分钟。
+
+所以终止判断放在 `supervisor` 入口，同时看三个维度：
+
+```
+elapsed > max_turn_seconds   → stop_reason="time"
+steps   >= max_steps         → stop_reason="steps"
+hops    >= max_agent_hops    → stop_reason="hops"
+```
+
+（返工总额度不在这里判：额度用尽量只该「不再返工」，而不是让整轮停摆。critic 里用
+`total_left` 挡住即可，否则 `max_total_revisions=0` 会变成「一步都不许走」。）
+
+停下之后不是抛异常，而是走 `save_memory → risk_guard → finalize` 正常收尾，把已经拿到的
+结论交付出去，并在 `stop_reason` 与决策轨迹里说明原因。
+
+还有两个防乒乓的细节：**返工无变化**（结论指纹相同就不再重审）、**副作用工具**
+（写过持仓/预警就不允许返工）。`recursion_limit` 按 `max_steps` 推导，只是最后一道防呆。
+
 ### 回测可靠性：两处「不信任模型」的设计
 
 **前视偏差审计**（core/backtest/audit.py）用截断检验：数据截断到 cut 重跑，截止日及

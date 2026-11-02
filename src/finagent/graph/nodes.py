@@ -27,7 +27,6 @@ from finagent.graph.intents import (
     classify_next,
     extract_profile_hints,
     looks_like_preference,
-    wants_deep_analysis,
 )
 from finagent.graph.mcp_client import Toolkit
 from finagent.graph.prompts import build_supervisor_prompt
@@ -157,17 +156,44 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
         hops = int(state.get("agent_hops") or 0)
         answers = state.get("answers") or []
 
+        budget = _bump(state)
+        steps = budget["steps"]
+
+        # 三重预算先于一切判断：任何一个触顶都不再派发新工作
+        exceeded = _turn_exceeded({**state, "steps": steps - 1}, settings)
+        if exceeded:
+            return Command(
+                goto="save_memory",
+                update={
+                    **budget,
+                    "stop_reason": exceeded,
+                    "route_reason": _describe_stop(exceeded, state),
+                    "next_agent": "finish",
+                    "decision_log": [
+                        {
+                            "step": "budget",
+                            "label": "预算用尽",
+                            "reason": exceeded,
+                            "detail": _describe_stop(exceeded, state),
+                        }
+                    ],
+                },
+            )
+
         if hops >= settings.max_agent_hops:
             return Command(
                 goto="save_memory",
                 update={
+                    **budget,
+                    "stop_reason": "hops",
                     "route_reason": f"已达到跳转上限（{settings.max_agent_hops}）",
                     "next_agent": "finish",
                 },
             )
         if answers and hops > 0 and not _may_continue(question, completed):
             return Command(
-                goto="save_memory", update={"route_reason": "已答完", "next_agent": "finish"}
+                goto="save_memory",
+                update={**budget, "route_reason": "已答完", "next_agent": "finish"},
             )
 
         agent, reason = await _decide(question, completed, state)
@@ -175,7 +201,7 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
         if agent == "finish" or agent in completed:
             return Command(
                 goto="save_memory",
-                update={"route_reason": reason or "finish", "next_agent": "finish"},
+                update={**budget, "route_reason": reason or "finish", "next_agent": "finish"},
             )
 
         # 立刻把路由决策推给客户端。``Command.update`` 要等节点返回后才进 updates 流，
@@ -194,6 +220,7 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
         return Command(
             goto=agent,
             update={
+                **budget,
                 "next_agent": agent,
                 "route_reason": reason,
                 "agent_hops": hops + 1,
@@ -265,6 +292,7 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
                 entry["revision"] = int((state.get("revisions") or {}).get(agent, 0))
 
             update: dict[str, Any] = {
+                **_bump(state),
                 "completed_agents": [agent],
                 "artifacts": {**(state.get("artifacts") or {}), **outcome.artifacts},
                 "trace": outcome.trace,
@@ -352,14 +380,39 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
                 )
 
         revisions = dict(state.get("revisions") or {})
+        total_revisions = int(state.get("total_revisions") or 0)
         used = int(revisions.get(agent, 0))
         budget_left = used < settings.max_revisions
-        revisable = is_revisable(agent, trace) and budget_left
+        total_left = total_revisions < settings.max_total_revisions
+        revisable = is_revisable(agent, trace) and budget_left and total_left
         wants_revision = result.verdict == "revise"
+
+        # 返工后结论一个字都没变 → 再审一遍也不会有新结果，直接接受，避免来回打乒乓
+        previous = state.get("critique") or {}
+        if (
+            wants_revision
+            and previous.get("verdict") == "revise"
+            and previous.get("answer_hash")
+            and previous["answer_hash"] == _hash(answer)
+        ):
+            wants_revision = False
+            result.issues.append(
+                {
+                    "type": "note",
+                    "label": "返工无变化",
+                    "detail": "上一版返工后的结论与之前完全一致，不再重复返工",
+                    "severity": "medium",
+                }
+            )
 
         if wants_revision and not revisable:
             # 记录但不返工：额度用尽，或这个专家有副作用（持仓/预警重跑会重复下单）
-            reason = "已达修订上限" if is_revisable(agent, trace) else "该专家有副作用，不重跑"
+            if not total_left:
+                reason = "本轮返工总额度已用尽"
+            elif not budget_left:
+                reason = "已达单专家修订上限"
+            else:
+                reason = "该专家有副作用，不重跑"
             result.issues.append(
                 {
                     "type": "note",
@@ -372,6 +425,7 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
 
         if wants_revision:
             revisions[agent] = used + 1
+            total_revisions += 1
 
         label = AGENT_LABELS.get(agent, agent)
         payload = {
@@ -381,6 +435,7 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
             "issues": result.issues,
             "revision": revisions.get(agent, used) if wants_revision else used,
             "source": result.source,
+            "answer_hash": _hash(answer),
             "verified": bool(verification.attempted) if verification else False,
             "verification": verification.to_dict()
             if verification and verification.attempted
@@ -414,10 +469,13 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
             "issues": result.issues,
         }
 
+        budget_update = {**_bump(state), "total_revisions": total_revisions}
+
         if wants_revision:
             return Command(
                 goto=agent,
                 update={
+                    **budget_update,
                     "critique": payload,
                     "revisions": revisions,
                     "decision_log": [log_entry],
@@ -426,7 +484,7 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
 
         return Command(
             goto="supervisor",
-            update={"critique": payload, "decision_log": [log_entry]},
+            update={**budget_update, "critique": payload, "decision_log": [log_entry]},
         )
 
     # ------------------------------------------------------------------
@@ -523,30 +581,29 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
         }
 
     def _may_continue(question: str, completed: list[str]) -> bool:
-        """这一轮是否还该再派一个专家？
+        """这一轮是否还该再派一个 Agent？
 
         A naive "any other agent scored above zero" test produces false follow-ups:
-        "用 MACD 策略回测 X" also matches the analyst's `macd` keyword, so the
-        supervisor would re-run the analyst on the same symbol. Require the runner-up
+        "用 MACD 策略回测 X" also matches the researcher's `macd` keyword, so the
+        supervisor would re-run the researcher on the same symbol. Require the runner-up
         to be a substantial fraction of the winning score instead.
 
-        「深度分析」是显式例外：用户明确要求两个维度，就把另一个分析师补上。
+        注意：合并成 3 个 Agent 之后，「深度分析」不再需要额外判真——研究 Agent 内部会
+        自己跑基本面 + 技术面两个子职责，所以这里只看关键词得分。
         """
 
         from finagent.graph.intents import classify_candidates
 
-        if wants_deep_analysis(question):
-            for analyst in ("fundamental_analyst", "technical_analyst"):
-                if analyst not in completed:
-                    return True
+        if any(agent not in completed for agent in EXPERT_AGENTS) is False:
+            return False
 
         ranked = classify_candidates(question)
         if not ranked:
             return False
 
         top_score = ranked[0][1]
-        # 选股请求本来就会提到「市盈率」，而它也是分析师的关键词；要求次优意图得分足够高，
-        # 才能避免估值词汇在同一轮里再触发一个专家。
+        # 选股请求本来就会提到「市盈率」，而它也是研究 Agent 的关键词；要求次优意图得分足够高，
+        # 才能避免估值词汇在同一轮里再触发一个 Agent。
         threshold = max(2.5, top_score * 0.7)
         for agent, score, _matched in ranked:
             if agent in completed:
@@ -604,6 +661,69 @@ def _apology(state: FinState) -> str:
         "- 「我 10.5 元买了 1000 股平安银行」\n"
         "- 「茅台涨到 2000 元提醒我」"
     )
+
+
+# ----------------------------------------------------------------------
+#: 触顶原因 → 给用户看的一句话
+_STOP_LABELS = {
+    "time": "本轮已用完时间预算",
+    "steps": "本轮已用完步数预算",
+    "hops": "已到跳转次数上限",
+}
+
+
+def _hash(text: str) -> str:
+    """结论指纹：用来判断「返工之后有没有实质变化」。"""
+
+    import hashlib
+
+    return hashlib.sha1((text or "").strip().encode("utf-8")).hexdigest()[:16]
+
+
+def _bump(state: FinState) -> dict[str, Any]:
+    """每个节点进入时 +1，用于步数预算。"""
+
+    return {"steps": int(state.get("steps") or 0) + 1}
+
+
+def _elapsed(state: FinState) -> float | None:
+    """本轮已经跑了多久（秒）。基线由 ``_reset_turn`` 写入。"""
+
+    started = state.get("turn_started")
+    if not isinstance(started, (int, float)) or started <= 0:
+        return None
+    import time
+
+    return time.monotonic() - float(started)
+
+
+def _turn_exceeded(state: FinState, settings: Settings) -> str | None:
+    """本轮是否该强制收尾？返回触顶原因（没有则 ``None``）。
+
+    这是「停不下来」的兜底。以前只有 ``max_agent_hops`` 一个限制，它只数跳转次数——
+    模型慢的时候一轮照样能跑几分钟、烧掉大量 token。现在时间、步数、返工次数三个维度
+    各自封顶，任何一个先到就收尾，并把原因写进决策轨迹。
+    """
+
+    elapsed = _elapsed(state)
+    if elapsed is not None and elapsed > settings.max_turn_seconds:
+        return "time"
+    if int(state.get("steps") or 0) >= settings.max_steps:
+        return "steps"
+    # 注意：返工总额度不在这里判。额度用尽量只该「不再返工」，而不是让整轮停摆——
+    # critic 里已经用 total_left 挡住了，这里再拦会把 max_total_revisions=0 变成
+    # 「一步都不许走」，那显然不是用户的意图。
+    return None
+
+
+def _describe_stop(reason: str, state: FinState) -> str:
+    label = _STOP_LABELS.get(reason, "本轮已收尾")
+    steps = int(state.get("steps") or 0)
+    text = f"{label}（{steps} 步"
+    elapsed = _elapsed(state)
+    if elapsed is not None:
+        text += f"，{elapsed:.0f} 秒"
+    return text + "）"
 
 
 # ----------------------------------------------------------------------

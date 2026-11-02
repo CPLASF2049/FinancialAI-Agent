@@ -116,6 +116,16 @@ class FinState(TypedDict, total=False):
     #: 每个专家被要求返工了几次，用来封顶修订循环。
     revisions: dict[str, int]
 
+    # 预算与终止 ---------------------------------------------------------
+    #: 本轮已经执行了多少个图节点（含 supervisor / 专家 / 审查者）。
+    steps: int
+    #: 本轮所有 Agent 合计的返工次数，与单 Agent 上限配合使用。
+    total_revisions: int
+    #: 本轮强制收尾的原因：`time` / `steps` / `revisions` / `hops`。
+    stop_reason: str
+    #: 本轮起点（`time.monotonic()`），用于墙钟预算。
+    turn_started: float
+
     # 可观测性 -----------------------------------------------------------
     #: 结构化决策轨迹：路由、审查、风控各占一条，前端据此渲染「决策轨迹」面板。
     decision_log: Annotated[list[dict[str, Any]], operator.add]
@@ -150,6 +160,9 @@ def initial_state(
         profile_updates={},
         critique={},
         revisions={},
+        steps=0,
+        total_revisions=0,
+        stop_reason="",
         decision_log=[],
         risk_flags=[],
     )

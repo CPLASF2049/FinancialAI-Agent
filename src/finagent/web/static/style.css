@@ -259,6 +259,13 @@ details.trace.decision { background: rgba(37, 99, 235, 0.035); border-color: rgb
 .dots i:nth-child(3) { animation-delay: .3s; }
 @keyframes bounce { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
 
+.stop-note {
+  margin-top: 10px; padding: 8px 12px; border-radius: 9px;
+  font-size: 12.8px; line-height: 1.6;
+  background: rgba(180, 83, 9, 0.08); color: var(--warn);
+  border: 1px solid rgba(180, 83, 9, 0.25);
+}
+
 .error-box {
   border: 1px solid rgba(220, 38, 38, .25); background: #fef2f2;
   color: #b91c1c; border-radius: 10px; padding: 10px 13px; font-size: 13.5px;

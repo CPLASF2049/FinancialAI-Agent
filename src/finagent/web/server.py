@@ -331,6 +331,7 @@ async def _stream_turn(
     errors: list[str] = []
     decisions: list[dict[str, Any]] = []
     routed: set[str] = set()
+    _stop_reason = ""
     seen_token = False
 
     yield _sse("start", {"thread_id": thread_id, "message": message})
@@ -418,6 +419,7 @@ async def _stream_turn(
                     result = event["result"]
                     answer = result.answer or ""
                     agents = list(result.agents or [])
+                    _stop_reason = str(getattr(result, "stop_reason", "") or "")
                     errors = [error for error in (result.errors or []) if error]
                     if not tools:
                         tools = [
@@ -462,6 +464,7 @@ async def _stream_turn(
             "tool_calls": len(tools),
             "errors": errors,
             "decisions": decisions,
+            "stop_reason": _stop_reason,
         },
     )
 

@@ -121,6 +121,13 @@ def _render_answer(console: Any, result: Any) -> None:
         f"[dim]路由：{' → '.join(result.agents) or '无'} | "
         f"工具调用：{len(result.trace)} | 用户：{result.user_id}[/dim]"
     )
+    stop = getattr(result, "stop_reason", "")
+    if stop:
+        # 「停不下来」的反面：真被预算截断时，用户必须知道这是被截断，而不是答完了
+        console.print(
+            f"[yellow]本轮因预算提前收尾（{stop}）：模型可能还没想完。"
+            "可调大 FINAGENT_MAX_TURN_SECONDS / FINAGENT_MAX_STEPS[/yellow]"
+        )
 
 
 # ----------------------------------------------------------------------
@@ -431,6 +438,11 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     table.add_row("行情数据源", settings.provider)
     table.add_row("LLM", f"{llm['provider']} / {llm['model']} ({llm['mode']})")
     table.add_row("最大专家跳转次数", str(settings.max_agent_hops))
+    table.add_row(
+        "终止性预算",
+        f"{settings.max_steps} 步 / {settings.max_turn_seconds:g} 秒 / "
+        f"返工 {settings.max_total_revisions} 次",
+    )
     table.add_row("MCP 传输方式", os.environ.get("FINAGENT_MCP_TRANSPORT", "inprocess"))
     table.add_row("Tushare token", "已配置" if settings.tushare_token else "未配置")
     table.add_row("SMTP", "已配置" if settings.email_smtp_server else "未配置")

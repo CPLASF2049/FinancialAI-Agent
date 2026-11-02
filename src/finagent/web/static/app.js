@@ -680,6 +680,17 @@
         } else {
           view.text.innerHTML = renderMarkdown(data.answer || state.tokens);
         }
+        if (data.stop_reason) {
+          const note = document.createElement('div');
+          note.className = 'stop-note';
+          const reason = {
+            time: '时间预算',
+            steps: '步数预算',
+            hops: '跳转次数',
+          }[data.stop_reason] || data.stop_reason;
+          note.textContent = `本轮因${reason}提前收尾，结论可能不完整。`;
+          view.bubble.appendChild(note);
+        }
         if (data.errors && data.errors.length) {
           const box = document.createElement("div");
           box.className = "error-box";

@@ -117,6 +117,25 @@ class Settings(BaseSettings):
         validation_alias="FINAGENT_MAX_AGENT_HOPS",
         description="Upper bound on supervisor -> expert hand-offs per user turn.",
     )
+    #: 一轮对话的墙钟预算（秒）。超过就停止派发新专家，用已有结论收尾。
+    #: 这是「卡死」的最终兜底：模型再慢，一轮也不会无限制跑下去。
+    max_turn_seconds: float = Field(
+        default=180.0,
+        validation_alias="FINAGENT_MAX_TURN_SECONDS",
+        description="单个用户回合的墙钟预算（秒）。",
+    )
+    #: 一轮对话最多执行多少个图节点（supervisor + 专家 + 审查者）。
+    max_steps: int = Field(
+        default=24,
+        validation_alias="FINAGENT_MAX_STEPS",
+        description="单个用户回合的节点执行预算。",
+    )
+    #: 一轮对话里所有专家合计最多被返工几次（跨 Agent 的总额度）。
+    max_total_revisions: int = Field(
+        default=2,
+        validation_alias="FINAGENT_MAX_TOTAL_REVISIONS",
+        description="单个用户回合内所有 Agent 合计的返工次数上限。",
+    )
     #: 每个专家最多被审查者打回返工几次。0 表示只审不返工。
     max_revisions: int = Field(
         default=1,

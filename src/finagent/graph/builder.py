@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
@@ -58,6 +59,8 @@ class TurnResult:
     errors: list[str] = field(default_factory=list)
     decisions: list[dict[str, Any]] = field(default_factory=list)
     risk_flags: list[dict[str, Any]] = field(default_factory=list)
+    #: 本轮是否被预算强制收尾（`time` / `steps` / `revisions` / `hops`）。
+    stop_reason: str = ""
     user_id: str = "default"
     thread_id: str = "cli"
 
@@ -72,6 +75,7 @@ class TurnResult:
             "errors": self.errors,
             "decisions": self.decisions,
             "risk_flags": self.risk_flags,
+            "stop_reason": self.stop_reason,
             "user_id": self.user_id,
             "thread_id": self.thread_id,
         }
@@ -129,6 +133,10 @@ def _reset_turn(load_memory):
             "critique": {},
             "revisions": {},
             "agent_hops": 0,
+            "steps": 0,
+            "total_revisions": 0,
+            "stop_reason": "",
+            "turn_started": time.monotonic(),
             "next_agent": "supervisor",
             "route_reason": "",
             "answer": "",
@@ -262,9 +270,13 @@ class FinAgentApp:
 
     # ------------------------------------------------------------------
     def _config(self, thread_id: str, user_id: str) -> dict[str, Any]:
+        # 递归上限按预算推导，而不是拍一个 60：LangGraph 每跑一个节点算一步，
+        # 预算 24 步 + 收尾链（save_memory → risk_guard → finalize）留足余量即可。
+        # 真正的终止保证在节点里（时间/步数/返工三重预算），这里只是最后一道防呆。
+        limit = max(40, self.settings.max_steps * 2 + 10)
         return {
             "configurable": {"thread_id": f"{user_id}:{thread_id}"},
-            "recursion_limit": 60,
+            "recursion_limit": limit,
         }
 
     async def arun(
@@ -346,6 +358,7 @@ def _to_turn_result(
         errors=list(state.get("errors") or []),
         decisions=list(state.get("decision_log") or []),
         risk_flags=list(state.get("risk_flags") or []),
+        stop_reason=str(state.get("stop_reason") or ""),
         user_id=user_id,
         thread_id=thread_id,
     )

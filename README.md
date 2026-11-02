@@ -627,6 +627,9 @@ FINAGENT_TUSHARE_TOKEN=你的token
 | `FINAGENT_MAX_AGENT_HOPS` | `4` | 单轮最多跳转几个专家 |
 | `FINAGENT_MAX_TOOL_ITERATIONS` | `8` | 单个专家最多迭代几次工具调用 |
 | `FINAGENT_MAX_REVISIONS` | `1` | 每个专家被审查者打回返工几次；`0` 表示只审不返工 |
+| `FINAGENT_MAX_TOTAL_REVISIONS` | `2` | 一轮里所有 Agent 合计的返工上限（跨 Agent）|
+| `FINAGENT_MAX_TURN_SECONDS` | `180` | 一轮的墙钟预算，超时即用已有结论收尾 |
+| `FINAGENT_MAX_STEPS` | `24` | 一轮最多执行多少个图节点 |
 | `FINAGENT_RISK_GUARD` | `true` | 是否启用交付前的确定性风控护栏 |
 | `FINAGENT_VERIFY_BACKTESTS` | `true` | 是否用子进程复算回测结论（代码级校验）|
 | `FINAGENT_REQUIRE_REAL_DATA` | `false` | 为 `true` 时禁止 offline 数据源作答 |
@@ -849,6 +852,35 @@ finagent audit --ts-code 600519.SH
 **口径**：日线收盘成交、100 股整手、双边佣金 0.03%、卖出印花税 0.05%，未建模滑点与
 停牌，基准默认沪深 300（000001.SH）。
 
+### 为什么它不会卡死
+
+多 Agent 系统最常见的故障不是答错，而是**停不下来**：Supervisor 觉得没做完、反复派活，
+Critic 觉得不对、反复打回，最后烧光 token 还是没结果。这里用四个互相独立的刹车：
+
+| 刹车 | 默认值 | 作用 |
+| --- | --- | --- |
+| `FINAGENT_MAX_AGENT_HOPS` | 4 | 一轮最多派几次活 |
+| `FINAGENT_MAX_STEPS` | 24 | 一轮最多执行多少个图节点 |
+| `FINAGENT_MAX_TURN_SECONDS` | 180 | 墙钟上限：模型再慢也会停 |
+| `FINAGENT_MAX_TOTAL_REVISIONS` | 2 | 跨 Agent 的返工总额度 |
+
+前两个是「做了多少事」，第三个是「花了多久」——**只有跳数限制是不够的**：模型慢的时候，
+4 次跳转照样能跑好几分钟。任何一个刹车先到，本轮就停止派发新工作、用已有结论收尾。
+
+还有两个防「打乒乓」的细节：
+
+- **返工无变化**：返工后的结论与上一版完全相同 → 不再重审（否则两个节点会来回转）。
+- **副作用工具**：这一轮只要调用过 `add_position` / `add_price_alert` 这类写操作，
+  就一律不允许返工——重跑等于重复下单。
+
+被刹车截断时，回答照常给出，同时明确告知原因（CLI 打黄字，界面显示黄色提示条）：
+
+```
+本轮因步数预算提前收尾，结论可能不完整。
+```
+
+程序侧对应 `TurnResult.stop_reason`（`time` / `steps` / `hops`），也写进「决策轨迹」。
+
 ### 结论是怎么被审查的
 
 三个环节，职责严格分开：
@@ -918,6 +950,7 @@ ruff format --check src tests
 | `test_risk.py` | 风控四条规则、幂等性、持仓未知时跳过 |
 | `test_debate.py` | 返工链路：替换旧答案、返工次数封顶、副作用专家不重跑 |
 | `test_store.py` | JSON 存储的锁：只读残留锁清理、锁路径异常时降级、并发不丢更新 |
+| `test_termination.py` | 终止性：三重预算各自生效、返工不乒乓、截断后仍有回答 |
 
 改了 MCP 工具之后记得重新生成文档：
 
