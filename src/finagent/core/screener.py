@@ -111,6 +111,20 @@ def screen(provider: MarketDataProvider, criteria: ScreenCriteria) -> dict[str, 
         raise InvalidArgument("数据源返回的选股池为空。")
 
     frame = universe.copy()
+
+    # 有些备用源（例如新浪）不提供行业分类。这时候按行业筛会得到「0 只」——
+    # 那不是「没有符合的股票」，而是「这次没法判断」。宁可明确报错，也不要给假阴性。
+    has_industry = bool(
+        "industry" in frame.columns
+        and frame["industry"].notna().any()
+        and (frame["industry"].astype(str) != "未分类").any()
+    )
+    if criteria.industries and not has_industry:
+        raise InvalidArgument(
+            "当前数据源没有提供行业分类，无法按行业筛选。",
+            hint="稍后重试（东财恢复后会自动带上行业），或改用 FINAGENT_PROVIDER=tushare。",
+        )
+
     frame["total_mv_yi"] = frame["total_mv"] / 10_000.0
     total_before = len(frame)
 
@@ -181,6 +195,9 @@ def screen(provider: MarketDataProvider, criteria: ScreenCriteria) -> dict[str, 
     }
     # 数据源可能只拿到部分市场（例如分页请求被限流）。这会让「命中 N 只」偏低，
     # 所以必须把完整性一并告知，而不是让调用方以为这就是全部。
+    source = getattr(provider, "last_universe_source", "")
+    if source:
+        payload["universe_source"] = source
     complete = getattr(provider, "last_universe_complete", None)
     if complete is False:
         payload["universe_complete"] = False

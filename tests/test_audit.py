@@ -64,7 +64,7 @@ def temp_strategies():
 
 
 # ----------------------------------------------------------------------
-def test_leaky_strategy_is_caught(temp_strategies, data_dir) -> None:
+def test_leaky_strategy_is_caught(offline_env, temp_strategies, data_dir) -> None:
     """负向对照：偷看未来的策略必须被判为泄漏。"""
 
     report = audit.check_strategy(
@@ -79,7 +79,7 @@ def test_leaky_strategy_is_caught(temp_strategies, data_dir) -> None:
     assert "成交不一致" in report.leaks[0] or "权益值" in report.leaks[0]
 
 
-def test_clean_strategy_passes(temp_strategies, data_dir) -> None:
+def test_clean_strategy_passes(offline_env, temp_strategies, data_dir) -> None:
     """正向对照：同样结构的干净策略必须通过，证明上面的失败不是因为检验太严。"""
 
     report = audit.check_strategy(
@@ -95,7 +95,7 @@ def test_clean_strategy_passes(temp_strategies, data_dir) -> None:
 
 
 # ----------------------------------------------------------------------
-def test_all_builtin_strategies_have_no_lookahead(data_dir) -> None:
+def test_all_builtin_strategies_have_no_lookahead(offline_env, data_dir) -> None:
     """内置策略必须全部通过截断检验（这是 CI 级的回归保护）。"""
 
     reports = audit.audit_strategies(
@@ -111,7 +111,7 @@ def test_all_builtin_strategies_have_no_lookahead(data_dir) -> None:
     assert summary["passed"] == len(checked)
 
 
-def test_multi_asset_strategy_is_skipped(data_dir) -> None:
+def test_multi_asset_strategy_is_skipped(offline_env, data_dir) -> None:
     reports = audit.audit_strategies(
         get_provider(), "600519.SH", start_date="20250101", end_date="20251231"
     )
@@ -120,7 +120,7 @@ def test_multi_asset_strategy_is_skipped(data_dir) -> None:
     assert all(r.skipped_reason for r in skipped)
 
 
-def test_report_is_serialisable(data_dir) -> None:
+def test_report_is_serialisable(offline_env, data_dir) -> None:
     report = audit.check_strategy(
         get_provider(), "600519.SH", "ma_cross", start_date="20250101", end_date="20251231"
     )
@@ -130,7 +130,7 @@ def test_report_is_serialisable(data_dir) -> None:
 
 
 @pytest.mark.parametrize("ratio", [0.3, 0.5, 0.7])
-def test_cut_ratio_can_be_moved(data_dir, ratio: float) -> None:
+def test_cut_ratio_can_be_moved(offline_env, data_dir, ratio: float) -> None:
     report = audit.check_strategy(
         get_provider(),
         "600519.SH",

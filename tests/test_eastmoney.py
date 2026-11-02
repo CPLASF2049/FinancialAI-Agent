@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -113,6 +114,9 @@ def provider(monkeypatch) -> EastmoneyProvider:
         raise AssertionError(f"未预期的 URL: {url}")
 
     monkeypatch.setattr(instance, "_http_json", fake)
+    # 关掉磁盘缓存：否则同一进程/同一 FINAGENT_DATA_DIR 下的用例会互相污染
+    instance._cache_path = lambda: None  # type: ignore[method-assign]
+    instance._disk_rows = {}  # 构造时已经读过一次缓存，这里清掉
     return instance
 
 
@@ -281,3 +285,114 @@ def test_screener_surfaces_partial_warning(provider: EastmoneyProvider, monkeypa
 
     assert result.get("universe_complete") is False
     assert "warning" in result
+
+
+# ----------------------------------------------------------------------
+# 双源容错：东财封 IP 时切新浪
+# ----------------------------------------------------------------------
+SINA_QUOTE = (
+    'var hq_str_sh600519="贵州茅台,1410.000,1392.050,1439.100,1447.000,1395.020,'
+    "1439.000,1439.100,8269100,11849258015.000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"
+    '0,0,0,0,2026-11-02,15:00:00,00,";'
+)
+
+SINA_ROWS = [
+    {
+        "symbol": "sh600519",
+        "code": "600519",
+        "name": "贵州茅台",
+        "trade": "1439.100",
+        "changepercent": "3.380",
+        "per": "20.93",
+        "pb": "6.63",
+        "mktcap": "179899243.2",
+        "nmc": "179899243.2",
+        "turnoverratio": "0.66",
+        "amount": "11849258015",
+    },
+    {
+        "symbol": "sz000001",
+        "code": "000001",
+        "name": "平安银行",
+        "trade": "11.540",
+        "changepercent": "-0.500",
+        "per": "4.29",
+        "pb": "0.60",
+        "mktcap": "22394400.0",
+        "nmc": "22394400.0",
+        "turnoverratio": "1.20",
+        "amount": "900000000",
+    },
+]
+
+
+def test_quote_falls_back_to_sina_when_eastmoney_fails(monkeypatch) -> None:
+    """东财 push2 被封（RemoteDisconnected）时必须自动切新浪，而不是整体失败。"""
+
+    instance = EastmoneyProvider()
+
+    def broken(url: str, params: dict | None = None) -> dict:
+        raise OSError("RemoteDisconnected")
+
+    monkeypatch.setattr(instance, "_http_json", broken)
+    monkeypatch.setattr(instance, "_http_text", lambda *a, **k: SINA_QUOTE)
+
+    quote = instance.realtime_price("600519.SH")
+    assert quote["name"] == "贵州茅台"
+    assert quote["price"] == pytest.approx(1439.1)
+    assert quote["pre_close"] == pytest.approx(1392.05)
+    assert quote["pct_chg"] == pytest.approx(3.38, abs=0.01)
+    assert quote["vol"] == pytest.approx(82691.0)  # 股 → 手
+    assert quote["source"] == "sina"
+
+
+def test_sina_page_is_normalised(monkeypatch) -> None:
+    instance = EastmoneyProvider()
+    monkeypatch.setattr(instance, "_http_text", lambda *a, **k: json.dumps(SINA_ROWS))
+
+    records = instance._sina_page(1)
+    assert records is not None and len(records) == 2
+    maotai = records[0]
+    assert maotai["ts_code"] == "600519.SH"
+    assert maotai["industry"] == "未分类"  # 新浪不带行业
+    assert maotai["total_mv"] == pytest.approx(179899243.2)
+    assert records[1]["ts_code"] == "000001.SZ"
+
+
+def test_universe_falls_back_to_sina(monkeypatch) -> None:
+    """东财列表不可用时，全市场改用新浪，并把来源标记出来。"""
+
+    instance = EastmoneyProvider()
+
+    def broken_list(page: int):
+        return None
+
+    monkeypatch.setattr(instance, "_list_page", broken_list)
+    # mock 在 HTTP 层，让 _sina_page 真正做归一化（直接塞原始字段会跳过它）
+    instance._cache_path = lambda: None  # type: ignore[method-assign]
+    instance._disk_rows = {}  # 构造时已经读过一次缓存，这里清掉
+    monkeypatch.setattr(instance, "_http_text", lambda *a, **k: json.dumps(SINA_ROWS))
+    monkeypatch.setattr("finagent.providers.eastmoney.time.sleep", lambda *_: None)
+
+    frame = instance.screening_universe()
+    assert len(frame) == 2
+    assert instance.last_universe_source == "sina"
+
+
+def test_screener_refuses_industry_filter_without_industry_data(monkeypatch) -> None:
+    """备用源没有行业字段时，按行业筛选必须报错，而不是静默返回 0 只。"""
+
+    from finagent.core.screener import ScreenCriteria, screen
+
+    instance = EastmoneyProvider()
+    monkeypatch.setattr(instance, "_list_page", lambda page: None)
+    instance._cache_path = lambda: None  # type: ignore[method-assign]
+    instance._disk_rows = {}  # 构造时已经读过一次缓存，这里清掉
+    monkeypatch.setattr(instance, "_http_text", lambda *a, **k: json.dumps(SINA_ROWS))
+    monkeypatch.setattr("finagent.providers.eastmoney.time.sleep", lambda *_: None)
+
+    with pytest.raises(Exception) as excinfo:
+        screen(instance, ScreenCriteria(pe_max=15, industries=["银行"], limit=5))
+
+    assert "行业" in str(excinfo.value)
+    assert getattr(excinfo.value, "hint", "")

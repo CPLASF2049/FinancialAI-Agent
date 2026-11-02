@@ -42,7 +42,7 @@ def test_spec_ignores_failed_or_missing_backtest() -> None:
 
 
 # ----------------------------------------------------------------------
-def test_subprocess_runs_the_engine(data_dir) -> None:
+def test_subprocess_runs_the_engine(offline_env, data_dir) -> None:
     """子进程真的把回测跑起来了，并且返回可用的指标。"""
 
     payload = verify.run_in_subprocess(SPEC, timeout=120)
@@ -53,7 +53,7 @@ def test_subprocess_runs_the_engine(data_dir) -> None:
     assert payload["data"]["bars"] > 0
 
 
-def test_unknown_strategy_is_rejected(data_dir) -> None:
+def test_unknown_strategy_is_rejected(offline_env, data_dir) -> None:
     """不接受任意代码：策略名必须在注册表里。"""
 
     payload = verify.run_in_subprocess({**SPEC, "strategy": "rm -rf /"}, timeout=60)
@@ -93,7 +93,7 @@ def test_compare_accepts_rounding() -> None:
 
 
 # ----------------------------------------------------------------------
-def test_fabricated_sharpe_is_caught_end_to_end(data_dir) -> None:
+def test_fabricated_sharpe_is_caught_end_to_end(offline_env, data_dir) -> None:
     """完整的「复算 + 比对」链路：编造的夏普必须被拦下。"""
 
     payload = verify.run_in_subprocess(SPEC, timeout=120)
@@ -113,7 +113,7 @@ def test_fabricated_sharpe_is_caught_end_to_end(data_dir) -> None:
     assert any("夏普" in issue["detail"] for issue in result.issues)
 
 
-def test_faithful_answer_passes(data_dir) -> None:
+def test_faithful_answer_passes(offline_env, data_dir) -> None:
     payload = verify.run_in_subprocess(SPEC, timeout=120)
     metrics = payload["metrics"]
     trace = [{"tool": "run_backtest", "ok": True, "args": SPEC}]

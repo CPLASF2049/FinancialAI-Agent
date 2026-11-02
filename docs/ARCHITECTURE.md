@@ -409,6 +409,27 @@ hops    >= max_agent_hops    → stop_reason="hops"
 还有两个防乒乓的细节：**返工无变化**（结论指纹相同就不再重审）、**副作用工具**
 （写过持仓/预警就不允许返工）。`recursion_limit` 按 `max_steps` 推导，只是最后一道防呆。
 
+### 免费数据源的双活与「如实降级」
+
+`eastmoney` provider 用的是公开行情接口：免费、免注册，但**随时可能限流或封 IP**（实测过
+一次封禁：列表接口直接 `RemoteDisconnected`，而 K 线接口还活着）。单源等于随时全瘫，所以：
+
+* **报价**：东财失败 → 新浪 `hq.sinajs.cn`（GBK 文本，字段位置固定）
+* **全市场**：东财 `clist` 失败 → 新浪 `Market_Center` 分页；字段口径（万元、ts_code）
+  在 `_normalise` / `_sina_page` 里对齐
+* **磁盘缓存**：每次抓到的行按 ts_code 并入 `eastmoney_universe.json`，缺页由后续调用补齐，
+  多次调用逐步收敛到全量
+
+关键不是「切源」，而是**切源之后要说实话**：
+
+| 降级情形 | 表现 |
+| --- | --- |
+| 只拿到部分市场 | 结果带 `universe_complete: false` + `warning`，不把「命中 N 只」当全量 |
+| 备源没有行业字段 | 按行业筛选**直接报错**，而不是返回 0 只（假阴性比报错危险） |
+| 两个源都不可用 | `ProviderUnavailable`，附可操作 hint |
+
+这一层没有任何「猜」：拿不到就是拿不到。
+
 ### 回测可靠性：两处「不信任模型」的设计
 
 **前视偏差审计**（core/backtest/audit.py）用截断检验：数据截断到 cut 重跑，截止日及

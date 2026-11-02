@@ -1,0 +1,29 @@
+feat: 免费数据源双活（东财 + 新浪），并在降级时如实告知
+
+背景：东方财富的公开接口把本机 IP 封了（列表/报价接口直接 RemoteDisconnected，
+K 线接口仍可用）。单源等于随时全瘫，所以补上备用源与如实降级。
+
+1) 报价双活
+   东财 push2 失败 → 新浪 hq.sinajs.cn（GBK 文本，字段位置固定）。
+   成交量从「股」统一换算成「手」，口径与东财一致。
+
+2) 全市场双活
+   先探一页：东财 clist 不可用就立刻切新浪 Market_Center 分页，不再傻等 60 次重试。
+   新浪列表不带行业分类 —— 所以按行业筛选时**直接报错**，而不是静默返回 0 只
+   （假阴性比报错危险）。
+
+3) 抓取健壮性
+   - 单页退避重试（3 次）；失败的页记下来，循环后补抓两轮
+   - 全市场抓取加 45 秒时间预算，超了用手上数据收尾
+   - 结果按 ts_code 并入磁盘缓存 eastmoney_universe.json（完整 TTL 30 分钟 /
+     不完整 2 分钟），多次调用逐步收敛到全量
+   - 只拿到部分时返回 universe_complete=false + warning，不把「命中 N 只」当全量
+   - 结果里带 universe_source（eastmoney / sina），让回答能说清数据来自哪
+
+4) 测试隔离
+   test_audit / test_verify 固定用 offline provider（这两类测试不该依赖外网）；
+   eastmoney 相关用例关掉磁盘缓存并清空内存行，避免跨用例污染。
+   修复：.env 里 REQUIRE_REAL_DATA=true 会让本地 pytest 全挂 —— conftest 显式覆盖掉。
+
+实测：报价走新浪兜底（茅台 1439.1）；选股 622 只 PE≤15（5576 只中），
+按行业筛选时返回可操作的错误提示。全量 393 passed / 1 skipped。
