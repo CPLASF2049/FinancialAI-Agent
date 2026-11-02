@@ -341,6 +341,78 @@ def _cmd_alerts(args: argparse.Namespace) -> int:
 
 
 # ----------------------------------------------------------------------
+def _cmd_audit(args: argparse.Namespace) -> int:
+    """前视偏差审计：截断数据重跑回测，比对截止日之前的成交与权益。"""
+
+    from rich.table import Table
+
+    from finagent.core.backtest.audit import audit_strategies, summarise
+    from finagent.providers.registry import get_provider
+
+    console = _console()
+    settings = get_settings()
+    provider = get_provider()
+    strategies = [args.strategy] if args.strategy else None
+
+    console.print(f"[bold]前视偏差审计[/bold] · 标的 {args.ts_code} · 数据源 {settings.provider}")
+    if settings.provider == "offline":
+        console.print(
+            "[yellow]注意[/yellow]：当前是离线 fixture，审计只能证明**方法**没有穿越，"
+            "不能代表真实行情表现。\n"
+        )
+
+    reports = audit_strategies(
+        provider,
+        args.ts_code,
+        strategies=strategies,
+        start_date=args.start,
+        end_date=args.end,
+    )
+    summary = summarise(reports)
+
+    table = Table(header_style="bold cyan")
+    table.add_column("策略")
+    table.add_column("结果")
+    table.add_column("截断日")
+    table.add_column("比对成交")
+    table.add_column("比对权益点")
+    for report in reports:
+        if report.skipped_reason:
+            mark = f"[dim]跳过（{report.skipped_reason}）[/dim]"
+        elif report.passed:
+            mark = "[green]通过[/green]"
+        else:
+            mark = "[red]泄漏[/red] " + "；".join(report.leaks)[:80]
+        table.add_row(
+            report.strategy,
+            mark,
+            report.cut_date or "—",
+            str(report.trades_before_cut),
+            str(report.curve_points_compared),
+        )
+    console.print(table)
+
+    verdict = (
+        f"[green]{summary['passed']}/{summary['checked']} 个策略通过[/green]"
+        if summary["ok"]
+        else f"[red]{summary['failed']} 个策略存在前视偏差[/red]"
+    )
+    console.print(f"\n{verdict}（共 {summary['total']} 个，跳过 {summary['skipped']} 个）")
+
+    if args.json:
+        import json as _json
+
+        console.print(
+            _json.dumps(
+                {"summary": summary, "reports": [r.to_dict() for r in reports]},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    return 0 if summary["ok"] else 1
+
+
+# ----------------------------------------------------------------------
 def _cmd_doctor(args: argparse.Namespace) -> int:
     from rich.table import Table
 
@@ -502,6 +574,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="仅在 A 股交易时段评估",
     )
 
+    audit = sub.add_parser("audit", help="前视偏差审计：验证回测没有用到未来数据")
+    audit.add_argument("--ts-code", default="600519.SH", help="标的（默认 600519.SH）")
+    audit.add_argument("--strategy", default=None, help="只审计某一个策略")
+    audit.add_argument("--start", default=None, help="起始日期 YYYYMMDD")
+    audit.add_argument("--end", default=None, help="结束日期 YYYYMMDD")
+    audit.add_argument("--json", action="store_true", help="输出机器可读的 JSON")
+
     sub.add_parser("doctor", help="环境与可用性自检")
     return parser
 
@@ -542,6 +621,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_mcp(args)
     if args.command == "alerts":
         return _cmd_alerts(args)
+    if args.command == "audit":
+        return _cmd_audit(args)
     if args.command == "doctor":
         return _cmd_doctor(args)
 

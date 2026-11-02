@@ -22,39 +22,30 @@ from typing import Annotated, Any, Literal, TypedDict
 from langgraph.graph.message import add_messages
 
 AgentName = Literal[
-    "stock_picker",
-    "fundamental_analyst",
-    "technical_analyst",
-    "backtest",
-    "portfolio",
+    "researcher",
+    "quant",
     "alert",
     "finish",
 ]
 
 #: 可执行的专家（不含 ``finish``）。顺序即 Supervisor 兜底路由的优先级。
 EXPERT_AGENTS: tuple[str, ...] = (
-    "stock_picker",
-    "fundamental_analyst",
-    "technical_analyst",
-    "backtest",
-    "portfolio",
+    "researcher",
+    "quant",
     "alert",
 )
 
 AGENT_LABELS: dict[str, str] = {
-    "stock_picker": "选股专家",
-    "fundamental_analyst": "基本面分析专家",
-    "technical_analyst": "技术面分析专家",
-    "backtest": "策略回测专家",
-    "portfolio": "持仓管理专家",
-    "alert": "预警监控专家",
+    "researcher": "研究 Agent",
+    "quant": "量化 Agent",
+    "alert": "预警 Agent",
     "critic": "审查者",
     "risk_guard": "风控",
     "finish": "汇总",
 }
 
-#: 属于「分析师」这一族的专家，用于判断是否需要交叉一致性检查。
-ANALYST_AGENTS: tuple[str, ...] = ("fundamental_analyst", "technical_analyst")
+#: 需要做交叉一致性检查的专家（研究 Agent 内部同时有基本面与技术面两个视角）。
+ANALYST_AGENTS: tuple[str, ...] = ("researcher",)
 
 
 def merge_unique(left: list[str] | None, right: list[str] | None) -> list[str]:

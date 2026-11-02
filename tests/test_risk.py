@@ -84,10 +84,18 @@ def test_missing_source_is_appended() -> None:
 
 
 def test_existing_source_is_respected() -> None:
+    """已有来源标注时不再重复追加；但离线数据仍会打「非真实行情」的横幅。"""
+
     original = "茅台现价 1650.96 元。_数据截至 20261028_"
-    text, flags, _ = check_source_annotation(original, provider="offline")
+    text, flags, _ = check_source_annotation(original, provider="tushare")
     assert text == original
     assert flags == []
+
+    # offline：不重复加脚注，但要在顶部明确标注这是演示数据
+    offline_text, offline_flags, _ = check_source_annotation(original, provider="offline")
+    assert "离线演示数据" in offline_text
+    assert "missing_source" not in {flag["code"] for flag in offline_flags}
+    assert "demo_data" in {flag["code"] for flag in offline_flags}
 
 
 def test_tushare_source_wording() -> None:

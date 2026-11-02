@@ -170,25 +170,48 @@ def check_strong_directives(
 def check_source_annotation(
     text: str, *, provider: str, as_of: str | None = None
 ) -> tuple[str, list[dict[str, str]], list[str]]:
-    """有数字却没标数据来源 → 补一条脚注。"""
+    """补数据来源脚注；离线数据额外打一条「非真实行情」的显式横幅。"""
 
-    if not _NUMBER_RE.search(text):
-        return text, [], []
-    if any(marker in text for marker in _SOURCE_MARKERS):
-        return text, [], []
+    has_numbers = bool(_NUMBER_RE.search(text))
+    marked = any(marker in text for marker in _SOURCE_MARKERS)
 
-    date = as_of or cal.format_date(cal.latest_trading_day())
-    source = "Tushare" if provider == "tushare" else "离线演示数据"
-    footer = (
-        f"\n\n_数据来源：{source}，截至 {date}。以上为工具返回的原始数据整理，不构成投资建议。_"
-    )
-    flag = _flag(
-        "missing_source",
-        "缺少数据来源标注",
-        f"结论含数字但未标注来源，已补注「{source}，截至 {date}」",
-        "medium",
-    )
-    return text + footer, [flag], ["已补充数据来源与日期标注"]
+    flags: list[dict[str, str]] = []
+    actions: list[str] = []
+
+    if has_numbers and not marked:
+        date = as_of or cal.format_date(cal.latest_trading_day())
+        source = "Tushare" if provider == "tushare" else "离线演示数据"
+        text += (
+            f"\n\n_数据来源：{source}，截至 {date}。以上为工具返回的原始数据整理，不构成投资建议。_"
+        )
+        flags.append(
+            _flag(
+                "missing_source",
+                "缺少数据来源标注",
+                f"结论含数字但未标注来源，已补注「{source}，截至 {date}」",
+                "medium",
+            )
+        )
+        actions.append("已补充数据来源与日期标注")
+
+    # 离线 fixture 不是真实行情。只要正文里出现数字，就把这句话顶到最前面——
+    # 宁可难看，也不能让人把样例数据当成市场事实。
+    if provider == "offline" and has_numbers and not text.lstrip().startswith(">"):
+        text = (
+            "> ⚠️ **离线演示数据**：以下数字来自内置 fixture，**不是真实行情**，"
+            "仅用于演示与测试。要真实数据请设置 `FINAGENT_PROVIDER=tushare`。\n\n" + text
+        )
+        flags.append(
+            _flag(
+                "demo_data",
+                "使用了离线演示数据",
+                "本轮结论基于内置样本数据，不能作为投资依据",
+                "medium",
+            )
+        )
+        actions.append("已在回答顶部标注「离线演示数据」")
+
+    return text, flags, actions
 
 
 # ----------------------------------------------------------------------

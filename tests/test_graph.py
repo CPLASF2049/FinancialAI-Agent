@@ -25,19 +25,18 @@ async def test_graph_loads_every_mcp_tool(offline_env) -> None:
 
 
 async def test_expert_tool_subsets_are_distinct(offline_env) -> None:
-    from finagent.graph.experts import EXPERT_TOOLS, tools_for
+    from finagent.graph.experts import EXPERT_TOOLS, PASS_TOOLS, tools_for
 
     async with open_app() as app:
         for agent in EXPERT_AGENTS:
             subset = app.toolkit.subset(tools_for(agent))
             assert subset, agent
             assert all(tool.name in app.toolkit.by_name for tool in subset)
-    # 指标工具归分析师所有，预警专家不应该看到它们。
-    # 技术面拿到指标工具，基本面拿不到；这条边界正是两个分析师拆开的意义
-    assert "compute_indicators" in EXPERT_TOOLS["technical_analyst"]
-    assert "compute_indicators" not in EXPERT_TOOLS["fundamental_analyst"]
-    assert "get_income_statement" in EXPERT_TOOLS["fundamental_analyst"]
-    assert "get_income_statement" not in EXPERT_TOOLS["technical_analyst"]
+    # 节点只有 3 个，但子职责的工具白名单仍然互不重叠
+    assert "compute_indicators" in PASS_TOOLS["technical"]
+    assert "compute_indicators" not in PASS_TOOLS["fundamental"]
+    assert "get_income_statement" in PASS_TOOLS["fundamental"]
+    assert "get_income_statement" not in PASS_TOOLS["technical"]
     assert "compute_indicators" not in EXPERT_TOOLS["alert"]
 
 
@@ -55,10 +54,10 @@ async def test_missing_tool_name_raises(offline_env) -> None:
 @pytest.mark.parametrize(
     ("question", "expected"),
     [
-        ("贵州茅台现在多少钱？", ["technical_analyst"]),
-        ("帮我筛选 PE 小于 10 的银行股", ["stock_picker"]),
-        ("用 MACD 策略回测中信证券近一年", ["backtest"]),
-        ("我以 10.5 元买入 1000 股平安银行", ["portfolio"]),
+        ("贵州茅台现在多少钱？", ["researcher"]),
+        ("帮我筛选 PE 小于 10 的银行股", ["researcher"]),
+        ("用 MACD 策略回测中信证券近一年", ["quant"]),
+        ("我以 10.5 元买入 1000 股平安银行", ["quant"]),
         ("茅台涨到 2000 元提醒我", ["alert"]),
     ],
 )
@@ -77,7 +76,8 @@ async def test_compound_request_runs_two_experts(offline_env) -> None:
             user_id="compound",
             thread_id="c1",
         )
-    assert set(result.agents) >= {"backtest", "portfolio"}
+    # 3 个节点之后，这类复合请求由 quant 一个节点内部跑两个子职责完成
+    assert result.agents == ["quant"]
     assert "回测结果" in result.answer
     assert "持仓" in result.answer
 
@@ -103,7 +103,7 @@ async def test_hop_limit_is_enforced(offline_env, monkeypatch) -> None:
 async def test_technical_answer_mentions_price_and_indicators(offline_env) -> None:
     async with open_app() as app:
         result = await app.arun("茅台最近一个月走势如何", user_id="a", thread_id="a1")
-    assert result.agents == ["technical_analyst"]
+    assert result.agents == ["researcher"]
     assert "贵州茅台" in result.answer
     assert "最新价" in result.answer
     assert "技术" in result.answer
@@ -115,7 +115,7 @@ async def test_technical_answer_mentions_price_and_indicators(offline_env) -> No
 async def test_fundamental_answer_mentions_valuation(offline_env) -> None:
     async with open_app() as app:
         result = await app.arun("茅台估值贵不贵", user_id="a2", thread_id="a3")
-    assert result.agents == ["fundamental_analyst"]
+    assert result.agents == ["researcher"]
     assert "PE" in result.answer
     assert "PB" in result.answer
     # 职责边界：基本面不许谈技术形态
@@ -232,7 +232,7 @@ async def test_per_turn_channels_reset(offline_env) -> None:
         await app.arun("用 MACD 回测中信证券近一年", user_id="iso", thread_id="i1")
         second = await app.arun("茅台现在多少钱", user_id="iso", thread_id="i1")
     # 新一轮对话里，回测专家不能被当成「已经跑过」。
-    assert second.agents == ["technical_analyst"]
+    assert second.agents == ["researcher"]
 
 
 async def test_conversation_history_accumulates(offline_env) -> None:

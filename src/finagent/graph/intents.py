@@ -26,6 +26,9 @@ from finagent.core.symbols import INDICES, SHORTHAND, UNIVERSE, normalize_code, 
 # 意图分类
 # ----------------------------------------------------------------------
 #: 每个 Agent 的（关键词，权重）列表；同分时按 ``PRIORITY`` 决定顺序。
+#:
+#: 图里只有 3 个节点，所以这里的桶也只有 3 个。每个桶内部再用 ``PASS_KEYWORDS``
+#: 决定「这个节点该跑哪几个子职责」。
 _INTENT_KEYWORDS: dict[str, tuple[tuple[str, float], ...]] = {
     "alert": (
         ("提醒", 3.0),
@@ -36,28 +39,22 @@ _INTENT_KEYWORDS: dict[str, tuple[tuple[str, float], ...]] = {
         ("监控", 2.0),
         ("涨到", 2.0),
         ("跌到", 2.0),
-        ("突破", 1.5),
         ("触及", 1.5),
         ("提醒我", 3.0),
     ),
-    "backtest": (
+    # 量化 Agent：回测 + 持仓
+    "quant": (
         ("回测", 3.5),
         ("backtest", 3.5),
         ("复盘", 2.0),
-        ("夏普", 2.0),
-        ("最大回撤", 1.5),
-        ("策略", 1.5),
-        ("胜率", 1.5),
-        ("收益率", 1.0),
+        ("夏普", 2.5),
+        ("最大回撤", 2.0),
+        ("胜率", 2.0),
         ("历史表现", 1.5),
-    ),
-    "portfolio": (
+        ("策略", 1.5),
         ("持仓", 3.0),
         ("仓位", 2.5),
-        ("组合", 2.0),
         ("盈亏", 2.5),
-        ("买入", 2.0),
-        ("卖出", 2.0),
         ("加仓", 2.5),
         ("减仓", 2.5),
         ("建仓", 2.5),
@@ -65,25 +62,25 @@ _INTENT_KEYWORDS: dict[str, tuple[tuple[str, float], ...]] = {
         ("成本价", 2.0),
         ("portfolio", 3.0),
         ("holdings", 3.0),
+        ("买入", 2.0),
+        ("卖出", 2.0),
         ("我买", 2.0),
         ("持有", 1.5),
+        ("组合", 1.5),
     ),
-    "stock_picker": (
+    # 研究 Agent：选股 + 基本面 + 技术面
+    "researcher": (
         ("选股", 3.5),
         ("筛选", 3.0),
         ("选出", 3.0),
-        ("挑", 2.0),
-        ("推荐", 2.0),
         ("长尾", 3.5),
         ("低估", 2.0),
         ("有哪些股票", 2.5),
         ("找一找", 2.0),
         ("screen", 2.5),
         ("符合条件", 2.0),
+        ("推荐", 2.0),
         ("龙头", 1.5),
-    ),
-    # 基本面：估值、财报、宏观、指数对比
-    "fundamental_analyst": (
         ("估值", 2.5),
         ("市盈率", 2.5),
         ("市净率", 2.5),
@@ -91,22 +88,15 @@ _INTENT_KEYWORDS: dict[str, tuple[tuple[str, float], ...]] = {
         ("pb", 1.5),
         ("财报", 2.5),
         ("财务", 2.5),
-        ("利润", 2.0),
-        ("营收", 2.0),
         ("净利润", 2.5),
         ("毛利率", 2.5),
         ("基本面", 2.5),
         ("宏观", 2.5),
         ("gdp", 2.0),
         ("cpi", 2.0),
-        ("市值", 2.0),
-        ("低估", 2.0),
         ("高估", 2.0),
         ("分红", 2.0),
         ("股息", 2.0),
-    ),
-    # 技术面：量价、指标、形态、资金
-    "technical_analyst": (
         ("行情", 2.0),
         ("走势", 2.5),
         ("技术面", 2.5),
@@ -123,7 +113,6 @@ _INTENT_KEYWORDS: dict[str, tuple[tuple[str, float], ...]] = {
         ("死叉", 2.5),
         ("超买", 2.0),
         ("超卖", 2.0),
-        ("突破", 1.5),
         ("资金流", 2.5),
         ("主力", 2.0),
         ("龙虎榜", 2.5),
@@ -131,10 +120,6 @@ _INTENT_KEYWORDS: dict[str, tuple[tuple[str, float], ...]] = {
         ("成交量", 2.0),
         ("量价", 2.5),
         ("概念", 1.5),
-    ),
-    # 泛化提问：两者都像，默认给技术面（量价是最常被问的），
-    # 但「深度/全面分析」会让 Supervisor 把两个都派出去。
-    "analyst:general": (
         ("股价", 1.5),
         ("多少", 1.0),
         ("怎么样", 1.0),
@@ -145,21 +130,100 @@ _INTENT_KEYWORDS: dict[str, tuple[tuple[str, float], ...]] = {
     ),
 }
 
-#: ``analyst:general`` 是给「泛化提问」用的虚拟桶，命中后落到技术面分析师。
-_GENERAL_ALIAS = {"analyst:general": "technical_analyst"}
+#: 节点内部的子职责关键词。顺序即执行顺序（先选股，再基本面，最后技术面）。
+PASS_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "screening": (
+        "选股",
+        "筛选",
+        "选出",
+        "长尾",
+        "有哪些股票",
+        "找一找",
+        "screen",
+        "符合条件",
+        "龙头",
+        "推荐",
+    ),
+    "fundamental": (
+        "估值",
+        "市盈率",
+        "市净率",
+        "pe",
+        "pb",
+        "财报",
+        "财务",
+        "利润",
+        "营收",
+        "净利润",
+        "毛利率",
+        "基本面",
+        "宏观",
+        "gdp",
+        "cpi",
+        "市值",
+        "高估",
+        "低估",
+        "分红",
+        "股息",
+    ),
+    "technical": (
+        "行情",
+        "走势",
+        "技术面",
+        "技术分析",
+        "指标",
+        "macd",
+        "rsi",
+        "kdj",
+        "布林",
+        "均线",
+        "k线",
+        "形态",
+        "金叉",
+        "死叉",
+        "超买",
+        "超卖",
+        "资金流",
+        "主力",
+        "龙虎榜",
+        "涨跌停",
+        "成交量",
+        "量价",
+        "股价",
+        "指数",
+    ),
+    "backtest": (
+        "回测",
+        "backtest",
+        "复盘",
+        "夏普",
+        "最大回撤",
+        "胜率",
+        "策略",
+        "历史表现",
+        "收益率",
+    ),
+    "portfolio": (
+        "持仓",
+        "仓位",
+        "组合",
+        "盈亏",
+        "买入",
+        "卖出",
+        "加仓",
+        "减仓",
+        "建仓",
+        "平仓",
+        "成本价",
+        "portfolio",
+        "holdings",
+        "我买",
+        "持有",
+    ),
+}
 
-#: 同分时的优先顺序（越具体的动作越靠前）。
-PRIORITY: tuple[str, ...] = (
-    "alert",
-    "backtest",
-    "portfolio",
-    "stock_picker",
-    "fundamental_analyst",
-    "technical_analyst",
-    "analyst:general",
-)
 
-#: 「深度 / 全面分析」这类请求要把两个分析师都派出去。
+#: 「深度 / 全面分析」这类请求要把研究 Agent 的两个视角都跑一遍。
 DEEP_ANALYSIS_MARKERS: tuple[str, ...] = (
     "深度分析",
     "全面分析",
@@ -176,10 +240,62 @@ DEEP_ANALYSIS_MARKERS: tuple[str, ...] = (
 
 
 def wants_deep_analysis(text: str) -> bool:
-    """用户是否明确要求「全面/深度」分析（需要两个分析师都上场）。"""
+    """用户是否明确要求「全面/深度」分析。"""
 
     lowered = (text or "").lower()
     return any(marker in lowered for marker in DEEP_ANALYSIS_MARKERS)
+
+
+def _hit(text: str, name: str) -> bool:
+    return any(keyword in text for keyword in PASS_KEYWORDS.get(name, ()))
+
+
+def researcher_passes(text: str) -> list[str]:
+    """研究 Agent 这一轮该跑哪几个子职责。
+
+    选股/估值/技术面各自命中就跑；「深度分析」强制基本面 + 技术面都跑；都没命中时
+    退到技术面（量价是最常被问的维度）。
+    """
+
+    lowered = (text or "").lower()
+    selected: list[str] = []
+    if _hit(lowered, "screening"):
+        selected.append("screening")
+    if _hit(lowered, "fundamental"):
+        selected.append("fundamental")
+    if _hit(lowered, "technical"):
+        selected.append("technical")
+
+    if wants_deep_analysis(lowered):
+        for name in ("fundamental", "technical"):
+            if name not in selected:
+                selected.append(name)
+    elif "screening" in selected and "fundamental" in selected:
+        # 选股请求里的「PE 小于 15」同时命中了基本面关键词，但那只是筛选条件，
+        # 没有必要再为每只命中标的单独跑一遍估值——除非用户明确要求深度分析。
+        selected.remove("fundamental")
+
+    if not selected:
+        selected = ["technical"]
+    return selected
+
+
+def quant_passes(text: str) -> list[str]:
+    """量化 Agent 这一轮该跑回测还是持仓（可能两个都要）。"""
+
+    lowered = (text or "").lower()
+    selected: list[str] = []
+    if _hit(lowered, "backtest"):
+        selected.append("backtest")
+    if _hit(lowered, "portfolio"):
+        selected.append("portfolio")
+    if not selected:
+        selected = ["portfolio"]
+    return selected
+
+
+#: 同分时的优先顺序（越具体的动作越靠前）。
+PRIORITY: tuple[str, ...] = ("alert", "quant", "researcher")
 
 
 def classify_intent(text: str) -> tuple[str, str]:
@@ -187,7 +303,7 @@ def classify_intent(text: str) -> tuple[str, str]:
 
     ranked = classify_candidates(text)
     if not ranked:
-        return "technical_analyst", "没有明显信号，默认交给技术面分析师"
+        return "researcher", "没有明显信号，默认交给研究 Agent"
     agent, score, matched = ranked[0]
     return agent, f"匹配关键词 {', '.join(matched[:4])}（得分 {score:g}）"
 
@@ -205,8 +321,7 @@ def classify_candidates(text: str) -> list[tuple[str, float, list[str]]]:
                 total += weight
                 matched.append(keyword)
         if total > 0:
-            resolved = _GENERAL_ALIAS.get(agent, agent)
-            ranked.append((resolved, total, matched))
+            ranked.append((agent, total, matched))
     ranked.sort(key=lambda item: (-item[1], PRIORITY.index(item[0]) if item[0] in PRIORITY else 99))
     return ranked
 
@@ -221,11 +336,6 @@ def classify_next(text: str, completed: Iterable[str]) -> tuple[str, str]:
     """
 
     done = set(completed)
-
-    if wants_deep_analysis(text):
-        for analyst in ("fundamental_analyst", "technical_analyst"):
-            if analyst not in done:
-                return analyst, "深度分析请求：逐个分析师给意见，再交叉检查"
 
     for agent, score, matched in classify_candidates(text):
         if agent in done:

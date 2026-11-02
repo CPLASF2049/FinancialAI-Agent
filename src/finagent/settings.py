@@ -123,6 +123,19 @@ class Settings(BaseSettings):
         validation_alias="FINAGENT_MAX_REVISIONS",
         description="每个专家被 critic 打回返工的最大次数。",
     )
+    #: 禁止使用离线 fixture 作答。打开后，provider=offline 会直接报错并提示配置 Tushare。
+    #: 面向真实投研场景建议打开：它能从根上杜绝「拿演示数据当真实行情」。
+    require_real_data: bool = Field(
+        default=False,
+        validation_alias="FINAGENT_REQUIRE_REAL_DATA",
+        description="为 true 时禁止 offline 数据源，强制使用真实行情。",
+    )
+    #: 是否用子进程复算回测结论（代码级校验）。关掉只影响校验，不影响回测本身。
+    verify_backtests: bool = Field(
+        default=True,
+        validation_alias="FINAGENT_VERIFY_BACKTESTS",
+        description="为 true 时，审查者会用子进程重跑回测并比对结论里的指标。",
+    )
     #: 交付前的确定性风控护栏开关。
     risk_guard_enabled: bool = Field(
         default=True,

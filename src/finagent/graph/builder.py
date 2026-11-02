@@ -5,12 +5,9 @@
     START
       └─ load_memory          从 LangGraph store 注入画像
            └─ supervisor      Command(goto=<专家>) | Command(goto="save_memory")
-                ├─ stock_picker ────────┐
-                ├─ fundamental_analyst  │  每个专家产出结论后都进审查者
-                ├─ technical_analyst    │
-                ├─ backtest             │
-                ├─ portfolio            │
-                └─ alert ───────────────┘
+                ├─ researcher  ─────────┐  研究：选股/基本面/技术面
+                ├─ quant       ─────────┤  量化：回测/持仓
+                └─ alert       ─────────┘  每个专家产出结论后都进审查者
                      └─ critic       pass → supervisor ｜ revise → 打回该专家返工
                           └─ supervisor …（受 max_agent_hops 限制）
            └─ save_memory        持久化本轮学到的偏好

@@ -1,0 +1,22 @@
+# 运行时依赖（生产/演示都用这套）。
+#
+# 安装：pip install -r requirements.txt
+# 然后：pip install -e . --no-deps      （只装本项目自身，不再解析依赖）
+#
+# 版本全部钉死，原因见 README「已知局限性」：MCP 生态迭代很快，
+# mcp 2.x 改过 `RequestContext` 的导出，langchain-mcp-adapters 会在 import 期直接崩。
+# 钉版本是让「clone 下来能跑」这件事可复现的最低成本做法。
+mcp==1.30.0
+langgraph==1.2.18
+langchain-core==1.7.0
+langchain-openai==1.7.3
+langchain-mcp-adapters==0.3.2
+pandas==3.1.0
+numpy==2.4.6
+pydantic==2.14.1
+pydantic-settings==2.16.1
+rich==15.0.0
+colorama==0.4.6
+starlette==1.10.0
+uvicorn==0.54.0
+httpx==0.28.1

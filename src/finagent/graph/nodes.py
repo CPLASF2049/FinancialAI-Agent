@@ -17,7 +17,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from finagent.graph.agent_loop import stream_writer
 from finagent.graph.critic import (
-    REVISABLE_AGENTS,
+    is_revisable,
     review,
     review_with_llm,
     summarise_tools,
@@ -34,6 +34,7 @@ from finagent.graph.prompts import build_supervisor_prompt
 from finagent.graph.risk import guard, held_codes_from
 from finagent.graph.state import AGENT_LABELS, EXPERT_AGENTS, FinState
 from finagent.graph.tooling import ToolRunner
+from finagent.graph.verify import verify_backtest_answer
 from finagent.logging import get_logger
 from finagent.settings import Settings
 
@@ -335,15 +336,30 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
                 evidence=evidence,
             )
 
+        # 代码级校验：只要这一轮真的跑过回测，就用子进程复算一遍，和结论里声称的指标比对
+        verification = None
+        if settings.verify_backtests:
+            verification = verify_backtest_answer(answer, trace)
+            if verification.attempted:
+                result.issues.extend(verification.issues)
+                if verification.issues:
+                    result.verdict = "revise"
+                log.info(
+                    "回测复算：%s（声称 %d 项，不符 %d 项）",
+                    "通过" if verification.ok else "不通过",
+                    len(verification.claimed),
+                    len(verification.issues),
+                )
+
         revisions = dict(state.get("revisions") or {})
         used = int(revisions.get(agent, 0))
         budget_left = used < settings.max_revisions
-        revisable = agent in REVISABLE_AGENTS and budget_left
+        revisable = is_revisable(agent, trace) and budget_left
         wants_revision = result.verdict == "revise"
 
         if wants_revision and not revisable:
             # 记录但不返工：额度用尽，或这个专家有副作用（持仓/预警重跑会重复下单）
-            reason = "已达修订上限" if agent in REVISABLE_AGENTS else "该专家有副作用，不重跑"
+            reason = "已达修订上限" if is_revisable(agent, trace) else "该专家有副作用，不重跑"
             result.issues.append(
                 {
                     "type": "note",
@@ -365,6 +381,10 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
             "issues": result.issues,
             "revision": revisions.get(agent, used) if wants_revision else used,
             "source": result.source,
+            "verified": bool(verification.attempted) if verification else False,
+            "verification": verification.to_dict()
+            if verification and verification.attempted
+            else None,
         }
 
         # 让前端实时看到审查结论（含「分歧信号」这类不阻断交付的提示）

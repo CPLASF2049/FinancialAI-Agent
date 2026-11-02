@@ -107,14 +107,19 @@ async def test_side_effect_agents_never_rerun(offline_env, monkeypatch: pytest.M
 
     async def bad_portfolio(agent: str, question: str, **kwargs):
         calls.append(agent)
-        return _outcome(agent, "已记录买入，市值 999999 元。", tool_calls=0)
+        outcome = _outcome(agent, "已记录买入，市值 999999 元。", tool_calls=0)
+        # 真实场景里这一轮会调用 add_position —— 正是它让返工变得不安全
+        outcome.trace = [
+            {"agent": agent, "tool": "add_position", "args": {}, "ok": True, "preview": "{}"}
+        ]
+        return outcome
 
     monkeypatch.setattr("finagent.graph.nodes.run_expert", bad_portfolio)
 
     async with open_app() as app:
         result = await app.arun("我的持仓怎么样", user_id="rv3", thread_id="rv3")
 
-    assert calls == ["portfolio"], "持仓专家被重跑了，会造成重复下单"
+    assert len(calls) == 1, "持仓写入被重跑了，会造成重复下单"
     notes = [
         issue
         for item in result.decisions
@@ -164,7 +169,7 @@ async def test_deep_analysis_runs_both_analysts(offline_env) -> None:
     async with open_app() as app:
         result = await app.arun("茅台帮我深度分析一下", user_id="dp1", thread_id="dp1")
 
-    assert result.agents == ["fundamental_analyst", "technical_analyst"]
+    assert result.agents == ["researcher"]
     assert "基本面" in result.answer
     assert "技术面" in result.answer
 
@@ -173,7 +178,7 @@ async def test_single_dimension_question_runs_one_analyst(offline_env) -> None:
     async with open_app() as app:
         result = await app.arun("茅台估值贵不贵", user_id="dp2", thread_id="dp2")
 
-    assert result.agents == ["fundamental_analyst"]
+    assert result.agents == ["researcher"]
 
 
 @pytest.mark.parametrize("agent", EXPERT_AGENTS)

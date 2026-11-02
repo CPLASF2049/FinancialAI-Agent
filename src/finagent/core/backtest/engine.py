@@ -60,6 +60,17 @@ class BacktestResult:
     equity_curve: list[dict[str, Any]] = field(default_factory=list)
     trades: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    #: **全部**成交，供审计使用；``trades`` 只是为了塞进模型上下文而截断的最后 12 笔，
+    #: 不能拿来做「截止日之前是否一致」这类判断。
+    all_trades: list[dict[str, Any]] = field(default_factory=list)
+    #: 实际用到的最后一根 K 线日期。它就是「数据截止时间」——结论里所有数字都以它为准。
+    data_asof: str = ""
+    #: 实际加载的首根 K 线（含预热段），用于证明指标有足够的预热窗口。
+    data_start: str = ""
+    #: 数据源名（``tushare`` / ``offline``），让下游能把「演示」和「真实」区分开。
+    provider: str = ""
+    #: 加载的 K 线根数（含预热），排查「样本太少」时有用。
+    bars: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -67,6 +78,12 @@ class BacktestResult:
             "strategy": self.strategy,
             "params": self.params,
             "period": {"start": self.start_date, "end": self.end_date},
+            "data": {
+                "provider": self.provider,
+                "asof": self.data_asof,
+                "first_bar": self.data_start,
+                "bars": self.bars,
+            },
             "initial_capital": round(self.initial_capital, 2),
             "final_value": round(self.final_value, 2),
             "total_return_pct": self.total_return_pct,
@@ -257,6 +274,11 @@ class BacktestEngine:
             exposure_pct=round(bars_in_market / max(len(curve), 1) * 100.0, 2),
             equity_curve=_downsample(curve, curve_points),
             trades=[_trade_dict(t) for t in trades[-12:]] if include_trades else [],
+            all_trades=[_trade_dict(t) for t in trades],
+            data_asof=str(enriched.iloc[-1]["trade_date"]),
+            data_start=str(enriched.iloc[0]["trade_date"]),
+            provider=str(getattr(self.provider, "name", "") or ""),
+            bars=int(len(enriched)),
         )
 
         if benchmark:

@@ -766,18 +766,18 @@ def _result(answer: str, agent: str, artifacts: dict[str, Any], errors: list[str
     return ExpertResult(answer=answer, agent=agent, artifacts=artifacts, errors=errors)
 
 
-#: 专家节点使用的分发表。
-HANDLERS = {
-    "fundamental_analyst": analyse_fundamental,
-    "technical_analyst": analyse_technical,
-    "stock_picker": pick_stocks,
+#: 子职责 → 手写流程。图里只有 3 个节点，但每个节点内部仍按这些子职责分别取数。
+PASS_HANDLERS = {
+    "screening": pick_stocks,
+    "fundamental": analyse_fundamental,
+    "technical": analyse_technical,
     "backtest": backtest,
     "portfolio": manage_portfolio,
     "alert": manage_alerts,
 }
 
-#: 纯分析型专家（无副作用），返工时可以安全重跑。
-_ANALYSIS_AGENTS = ("fundamental_analyst", "technical_analyst", "stock_picker", "backtest")
+#: 纯分析型子职责（无副作用），返工时可以安全重跑。
+_ANALYSIS_PASSES = ("screening", "fundamental", "technical", "backtest")
 
 
 def _with_revision_note(answer: str, critique: dict[str, Any] | None) -> str:
@@ -794,6 +794,35 @@ def _with_revision_note(answer: str, critique: dict[str, Any] | None) -> str:
     return note + answer
 
 
+async def run_pass(
+    name: str,
+    question: str,
+    runner: ToolRunner,
+    *,
+    critique: dict[str, Any] | None = None,
+) -> ExpertResult:
+    """跑一个子职责。"""
+
+    handler = PASS_HANDLERS.get(name)
+    if handler is None:
+        return ExpertResult(
+            answer=f"未实现的子职责：{name}", agent=name, errors=[f"no handler for {name}"]
+        )
+
+    result = await handler(question, runner)
+    if name in _ANALYSIS_PASSES:
+        result.answer = _with_revision_note(result.answer, critique)
+    return result
+
+
+#: 兼容旧调用：按 3 个 Agent 展开成它们各自的子职责。
+_AGENT_PASSES = {
+    "researcher": ("screening", "fundamental", "technical"),
+    "quant": ("backtest", "portfolio"),
+    "alert": ("alert",),
+}
+
+
 async def run(
     agent: str,
     question: str,
@@ -801,13 +830,31 @@ async def run(
     *,
     critique: dict[str, Any] | None = None,
 ) -> ExpertResult:
-    handler = HANDLERS.get(agent)
-    if handler is None:
+    """按 Agent 名跑完它名下所有子职责，答案拼接返回。"""
+
+    passes = _AGENT_PASSES.get(agent)
+    if not passes:
         return ExpertResult(
             answer=f"未实现的分析器：{agent}", agent=agent, errors=[f"no handler for {agent}"]
         )
 
-    result = await handler(question, runner)
-    if agent in _ANALYSIS_AGENTS:
-        result.answer = _with_revision_note(result.answer, critique)
-    return result
+    from finagent.graph.intents import quant_passes, researcher_passes
+
+    if agent == "researcher":
+        passes = tuple(researcher_passes(question))
+    elif agent == "quant":
+        passes = tuple(quant_passes(question))
+
+    sections: list[str] = []
+    artifacts: dict[str, Any] = {}
+    errors: list[str] = []
+    for name in passes:
+        result = await run_pass(name, question, runner, critique=critique)
+        if result.answer.strip():
+            sections.append(result.answer)
+        artifacts.update(result.artifacts)
+        errors.extend(result.errors)
+
+    return ExpertResult(
+        answer="\n\n".join(sections), agent=agent, artifacts=artifacts, errors=errors
+    )

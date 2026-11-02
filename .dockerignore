@@ -1,0 +1,22 @@
+# 构建镜像时不需要的东西——保持层缓存与镜像体积干净
+.git
+.gitignore
+.venv
+.uv-cache
+.pip-cache
+__pycache__
+*.py[cod]
+*.egg-info
+.ruff_cache
+.pytest_cache
+pytest-cache-files-*
+tests
+docs
+scripts
+_scratch
+_pytest
+.env
+.env.local
+*.sqlite
+*.sqlite-*
+*.jsonl

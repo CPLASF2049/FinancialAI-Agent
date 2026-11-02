@@ -22,6 +22,15 @@ def build_provider(settings: Settings | None = None) -> MarketDataProvider:
 
         return TushareProvider(resolved.tushare_token, requests_per_second=resolved.tushare_rps)
     if resolved.provider == "offline":
+        if resolved.require_real_data:
+            raise ConfigurationError(
+                "已设置 FINAGENT_REQUIRE_REAL_DATA=true，但当前数据源仍是 offline。",
+                hint=(
+                    "离线 fixture 是内置样本，不是真实行情。"
+                    "请设置 FINAGENT_PROVIDER=tushare 并提供 FINAGENT_TUSHARE_TOKEN；"
+                    "只想先跑通测试的话，把 FINAGENT_REQUIRE_REAL_DATA 设回 false。"
+                ),
+            )
         from finagent.providers.offline import OfflineProvider
 
         return OfflineProvider()

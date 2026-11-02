@@ -8,10 +8,10 @@ from __future__ import annotations
 import pytest
 
 from finagent.graph.critic import (
-    REVISABLE_AGENTS,
     check_contradictions,
     check_evidence,
     check_sycophancy,
+    is_revisable,
     parse_critic_output,
     review,
     summarise_tools,
@@ -73,16 +73,19 @@ def test_bullish_and_bearish_in_one_answer() -> None:
     assert issues and issues[0]["severity"] == "medium"
 
 
-def test_cross_expert_divergence_is_a_signal_not_an_error() -> None:
-    """技术面看多 + 基本面偏空 = 分歧信号，有价值但不阻断交付。"""
+def test_researcher_two_views_diverging_is_a_signal_not_an_error() -> None:
+    """研究 Agent 内部同时给基本面与技术面时，方向相反要标成「分歧信号」。
 
-    others = [{"agent": "fundamental_analyst", "answer": "估值偏高，基本面偏空。"}]
+    3 个节点之后，两个视角在同一份结论里，所以这条检查变成「同一段正文内自相矛盾」，
+    严重度仍是 medium：有价值，但不阻断交付。
+    """
+
     issues = check_contradictions(
-        "技术面强势突破，金叉形成，看多。",
-        agent="technical_analyst",
-        other_answers=others,
+        "## 基本面\n估值偏高，基本面偏空。\n\n## 技术面\n技术面强势突破，金叉形成，看多。",
+        agent="researcher",
+        other_answers=[],
     )
-    assert issues and "分歧信号" in issues[0]["detail"]
+    assert issues
     assert issues[0]["severity"] == "medium"
 
 
@@ -183,12 +186,16 @@ def test_parse_rejects_garbage() -> None:
     assert parse_critic_output('{"verdict": "maybe"}') is None
 
 
-def test_side_effect_agents_are_not_revisable() -> None:
-    """持仓和预警重跑会重复下单/重复建预警，必须排除在返工之外。"""
+def test_side_effect_tools_block_revision() -> None:
+    """持仓和预警重跑会重复下单/重复建预警，必须排除在返工之外。
 
-    assert "portfolio" not in REVISABLE_AGENTS
-    assert "alert" not in REVISABLE_AGENTS
-    assert "technical_analyst" in REVISABLE_AGENTS
+    判定依据是实际调用过的工具，而不是 Agent 名字——quant 既能回测也能写持仓。
+    """
+
+    assert is_revisable("researcher", [{"tool": "screen_stocks"}]) is True
+    assert is_revisable("quant", [{"tool": "run_backtest"}]) is True
+    assert is_revisable("quant", [{"tool": "add_position"}]) is False
+    assert is_revisable("alert", []) is False
 
 
 def test_summarise_tools_marks_failures() -> None:

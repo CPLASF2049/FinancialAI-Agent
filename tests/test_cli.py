@@ -73,14 +73,7 @@ def test_graph_command_prints_topology(offline_env, capsys: pytest.CaptureFixtur
     assert main(["graph"]) == 0
     out = capsys.readouterr().out
     assert "Supervisor + 专家拓扑" in out
-    for agent in (
-        "stock_picker",
-        "fundamental_analyst",
-        "technical_analyst",
-        "backtest",
-        "portfolio",
-        "alert",
-    ):
+    for agent in ("researcher", "quant", "alert"):
         assert agent in out
 
 

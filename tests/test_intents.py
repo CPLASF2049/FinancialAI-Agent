@@ -24,18 +24,18 @@ from finagent.graph.intents import (
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("贵州茅台现在多少钱", "technical_analyst"),
-        ("茅台最近一个月走势怎么样", "technical_analyst"),
-        ("茅台估值贵不贵", "fundamental_analyst"),
-        ("茅台的市盈率和市净率是多少", "fundamental_analyst"),
-        ("茅台财报里的净利润怎么样", "fundamental_analyst"),
-        ("茅台 MACD 是不是金叉了", "technical_analyst"),
-        ("帮我筛选 PE 小于 15 的银行股", "stock_picker"),
-        ("有哪些低估的长尾股票", "stock_picker"),
-        ("用 MACD 策略回测中信证券近一年", "backtest"),
-        ("回测一下平安银行的均线策略", "backtest"),
-        ("我以 10.5 元买入 1000 股平安银行", "portfolio"),
-        ("现在我的持仓盈亏怎么样", "portfolio"),
+        ("贵州茅台现在多少钱", "researcher"),
+        ("茅台最近一个月走势怎么样", "researcher"),
+        ("茅台估值贵不贵", "researcher"),
+        ("茅台的市盈率和市净率是多少", "researcher"),
+        ("茅台财报里的净利润怎么样", "researcher"),
+        ("茅台 MACD 是不是金叉了", "researcher"),
+        ("帮我筛选 PE 小于 15 的银行股", "researcher"),
+        ("有哪些低估的长尾股票", "researcher"),
+        ("用 MACD 策略回测中信证券近一年", "quant"),
+        ("回测一下平安银行的均线策略", "quant"),
+        ("我以 10.5 元买入 1000 股平安银行", "quant"),
+        ("现在我的持仓盈亏怎么样", "quant"),
         ("茅台涨到 2000 元提醒我", "alert"),
         ("如果平安银行上涨 5% 就提醒我", "alert"),
         ("列出我的预警", "alert"),
@@ -54,17 +54,16 @@ def test_alert_beats_backtest_on_tie() -> None:
 
 def test_classify_next_skips_completed() -> None:
     agent, _ = classify_next("回测茅台并看看我的持仓", [])
-    assert agent == "backtest"
-    agent, _ = classify_next("回测茅台并看看我的持仓", ["backtest"])
-    assert agent == "portfolio"
-    agent, _ = classify_next("回测茅台并看看我的持仓", ["backtest", "portfolio"])
+    assert agent == "quant"
+    # 合并成 3 个节点后，「回测 + 持仓」由 quant 一个节点内部完成，不会重复派发
+    agent, _ = classify_next("回测茅台并看看我的持仓", ["quant"])
     assert agent == "finish"
 
 
 def test_classify_candidates_scores_are_sorted() -> None:
     ranked = classify_candidates("回测 MACD 策略")
     assert ranked
-    assert ranked[0][0] == "backtest"
+    assert ranked[0][0] == "quant"
     assert all(ranked[i][1] >= ranked[i + 1][1] for i in range(len(ranked) - 1))
 
 

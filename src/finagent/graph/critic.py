@@ -28,10 +28,35 @@ from finagent.logging import get_logger
 
 log = get_logger("graph.critic")
 
-#: 允许返工的专家。持仓/预警有副作用，绝不重跑。
-REVISABLE_AGENTS: frozenset[str] = frozenset(
-    {"stock_picker", "fundamental_analyst", "technical_analyst", "backtest"}
+#: 有副作用的工具：写持仓、写预警。只要这一轮调用过其中任何一个，就不允许返工——
+#: 重跑等于重复下单、重复建预警。
+SIDE_EFFECT_TOOLS: frozenset[str] = frozenset(
+    {
+        "add_position",
+        "remove_position",
+        "update_position",
+        "clear_portfolio",
+        "add_price_alert",
+        "update_alert",
+        "remove_alert",
+    }
 )
+
+#: 永远不返工的 Agent（预警节点整体是动作型的）。
+NON_is_revisable: frozenset[str] = frozenset({"alert"})
+
+
+def is_revisable(agent: str, trace: list[dict[str, Any]]) -> bool:
+    """这一轮能不能打回返工。
+
+    判定依据是**实际调用过的工具**，而不是 Agent 名字：`quant` 只跑回测时可以返工，
+    但同一节点里写过持仓就不行。
+    """
+
+    if agent in NON_is_revisable:
+        return False
+    return not any(item.get("tool") in SIDE_EFFECT_TOOLS for item in trace or [])
+
 
 #: 高严重度问题会导致 ``revise``；中等的只记录（例如「分歧信号」）。
 HIGH = "high"

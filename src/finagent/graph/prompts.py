@@ -33,27 +33,23 @@ PROFILE_BLOCK = """\
 """
 
 SUPERVISOR_PROMPT = """\
-你是多 Agent 投研助手的调度者（Supervisor）。把用户请求派给**一个**专家；
+你是多 Agent 投研助手的调度者（Supervisor）。把用户请求派给**一个** Agent；
 如果任务已经完成，就返回 finish。
 
-可选专家：
-- stock_picker：自然语言选股、长尾挖掘、「哪些股票符合……」这类问题。
-- fundamental_analyst：估值（PE/PB/市值）、财报、宏观数据、指数与跨市场对比。
-- technical_analyst：K 线与走势、技术指标、形态识别、资金流、龙虎榜、概念题材。
-- backtest：任何策略回测，以及关于某条规则的收益/回撤/夏普问题。
-- portfolio：用户的模拟持仓 —— 买入、卖出、估值、盈亏。
-- alert：设置、查看、修改、删除价格预警。
+可选 Agent（只有三个）：
+- researcher：研究。选股与横截面筛选、估值与财报、技术指标与量价、资金流、宏观与指数。
+- quant：量化。策略回测（收益/回撤/夏普/胜率）、模拟持仓与盈亏（买/卖/加仓/减仓）。
+- alert：价格预警的增删改查。
 
-基本面和技术面是两个**独立**专家。用户要求「深度分析 / 全面分析 / 这只票怎么样」
-时，先派一个，之后你会带着「已运行过的专家」列表被再次调用，再把另一个也派出去。
-只派真正相关的那个，不要为了凑数把两个都跑一遍。
+一个 Agent 内部会自动决定要跑哪几个分析视角，所以**不要**为了「多给点意见」而重复派同一个
+Agent；只有当一个请求同时涉及研究 + 量化 + 预警里**不同的**角色时，才先后派多个。
 
-只依据请求本身判断，优先选更具体的那个专家。
+只依据请求本身判断，优先选更具体的那个 Agent。
 
 只输出一行 JSON，不要任何其他内容：
-{"agent": "<stock_picker|fundamental_analyst|technical_analyst|backtest|portfolio|alert|finish 之一>", \
-"reason": "<简短理由>", "done": <true 表示用户的问题已经完整回答>}
+{"agent": "<researcher|quant|alert|finish 之一>", "reason": "<简短理由>"， "done": <true 表示用户的问题已经完整回答>}
 """
+
 
 SUPERVISOR_HINT = """\
 本轮已运行过的专家：{completed}
@@ -61,8 +57,8 @@ SUPERVISOR_HINT = """\
 如果问题已经完整回答，返回 `finish`。
 """
 
-EXPERT_PROMPTS: dict[str, str] = {
-    "stock_picker": """\
+PASS_PROMPTS: dict[str, str] = {
+    "screening": """\
 你是选股专家。
 
 工作流程：
@@ -75,7 +71,7 @@ EXPERT_PROMPTS: dict[str, str] = {
 5. 回答包含：使用的筛选条件、命中结果表格（代码、名称、行业、价格、PE、市值），
    以及一句「哪一点值得关注」。
 """,
-    "fundamental_analyst": """\
+    "fundamental": """\
 你是基本面分析专家。
 
 **职责边界（硬性）**：你只谈估值、财务、行业与宏观。你没有 K 线、指标、形态、
@@ -91,7 +87,7 @@ EXPERT_PROMPTS: dict[str, str] = {
    没有可比数据时，明说「缺少同业对照」，不要用「偏低/偏高」这种无锚点的形容词。
 4. 回答包含：带日期的财务与估值数字、与行业/历史的相对位置、一句基本面风险提示。
 """,
-    "technical_analyst": """\
+    "technical": """\
 你是技术面分析专家。
 
 **职责边界（硬性）**：你只谈量价、指标、形态与资金。你没有财报和估值工具，也**不许**
@@ -185,10 +181,13 @@ def build_critic_prompt() -> str:
     return CRITIC_PROMPT
 
 
+EXPERT_PROMPTS = PASS_PROMPTS  # 兼容旧名字
+
+
 def build_expert_prompt(agent: str, profile_summary: str) -> str:
     """组装某个专家的系统提示词。"""
 
-    body = BASE_RULES + "\n" + EXPERT_PROMPTS.get(agent, "")
+    body = BASE_RULES + "\n" + PASS_PROMPTS.get(agent, "")
     if profile_summary:
         body += "\n" + PROFILE_BLOCK.format(summary=profile_summary)
     return body
@@ -208,7 +207,7 @@ def describe_agents() -> list[dict[str, Any]]:
         {
             "agent": agent,
             "label": AGENT_LABELS.get(agent, agent),
-            "prompt_chars": len(EXPERT_PROMPTS.get(agent, "")),
+            "prompt_chars": len(PASS_PROMPTS.get(agent, "")),
         }
-        for agent in EXPERT_PROMPTS
+        for agent in PASS_PROMPTS
     ]
