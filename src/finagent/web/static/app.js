@@ -182,7 +182,12 @@
   function renderThreads() {
     const list = $("threadList");
     list.innerHTML = "";
-    state.threads.forEach((thread) => {
+    // 空会话不显示。历史上「新对话」每点一次就在服务端建一个空会话，点几次堆几个，
+    // 刷新后满屏「新对话」。现在前端改成发送时才建会话，老的那批也在这里藏掉。
+    const visible = state.threads.filter(
+      (thread) => thread.message_count > 0 || thread.id === state.threadId
+    );
+    visible.forEach((thread) => {
       const row = document.createElement("div");
       row.className = "thread" + (thread.id === state.threadId ? " active" : "");
       row.title = thread.preview || thread.title;
@@ -208,10 +213,13 @@
   }
 
   async function newThread() {
-    const res = await fetch("/api/threads", { method: "POST" });
-    const created = await res.json();
-    state.threadId = created.id;
-    localStorage.setItem("finagent.thread", created.id);
+    // 关键：这里**不**向服务端建会话。
+    // 以前是点一下 POST 一个 thread，于是只要用户连点几次（尤其是界面卡住时反复点），
+    // 服务端就堆一堆空对话，刷新后全冒出来。现在「新对话」只是清空视图，
+    // 真正的会话在第一次发送时创建（见 send()）。
+    if (state.streaming) stopStream();
+    state.threadId = null;
+    localStorage.removeItem("finagent.thread");
     resetView();
     await loadThreads();
     $("input").focus();
@@ -482,7 +490,12 @@
   // ------------------------------------------------------------------
   async function send(text) {
     const message = (text || $("input").value || "").trim();
-    if (!message || state.streaming) return;
+    if (!message) return;
+    if (state.streaming) {
+      // 以前这里直接 return：用户点「发送」毫无反应，就会以为界面卡死了
+      showToast("正在生成中，先点「停止」再发送");
+      return;
+    }
 
     $("input").value = "";
     autoGrow();
@@ -525,11 +538,22 @@
         throw new Error(`服务返回 ${response.status}`);
       }
 
+      armWatchdog({ view, thinking });
       await consumeStream(response.body, { view, thinking });
     } catch (err) {
       if (err.name === "AbortError") {
         view.text.classList.remove("streaming");
-        view.text.innerHTML = renderMarkdown(state.tokens || "_（已停止）_");
+        thinking.remove();
+        if (state.abortReason === "timeout") {
+          // 后台 2 分钟没有任何输出：主动收尾，把界面还给用户，
+          // 而不是让「发送」按钮永远禁用（这就是「点不动」的来源）
+          view.text.innerHTML = renderMarkdown(
+            (state.tokens || "") + "\n\n> ⚠️ 后台 2 分钟没有响应，已自动停止。可直接重发。"
+          );
+          state.abortReason = "";
+        } else {
+          view.text.innerHTML = renderMarkdown(state.tokens || "_（已停止）_");
+        }
       } else {
         thinking.remove();
         const box = document.createElement("div");
@@ -538,11 +562,60 @@
         view.bubble.appendChild(box);
       }
     } finally {
+      clearWatchdog();
       setStreaming(false);
       state.controller = null;
       state.threadId && localStorage.setItem("finagent.thread", state.threadId);
       await loadThreads();
     }
+  }
+
+  // ------------------------------------------------------------------
+  // 看门狗：SSE 长时间没有任何事件 = 后台卡住了，必须自己收尾
+  // ------------------------------------------------------------------
+  //: 多久没收到事件就认为后台失联（毫秒）。单次 LLM 调用最长 90 秒，留一点余量。
+  const WATCHDOG_MS = 120000;
+  let watchdogTimer = null;
+  let watchdogStart = 0;
+
+  function armWatchdog(ctx) {
+    watchdogStart = Date.now();
+    state.lastEventAt = Date.now();
+    clearInterval(watchdogTimer);
+    watchdogTimer = setInterval(() => {
+      const silent = Date.now() - state.lastEventAt;
+      const total = Date.now() - watchdogStart;
+      // 把「已经跑了多久」显示出来，用户能分清「在跑」和「卡死」
+      const hint = ctx.thinking.querySelector("span:last-child");
+      if (hint && hint.textContent && !hint.textContent.includes("×")) {
+        const seconds = Math.round(total / 1000);
+        hint.textContent = hint.textContent.replace(/（\d+ 秒）$/, "") + `（${seconds} 秒）`;
+      }
+      if (silent > WATCHDOG_MS) {
+        clearWatchdog();
+        state.abortReason = "timeout";
+        if (state.controller) state.controller.abort();
+      }
+    }, 1000);
+  }
+
+  function clearWatchdog() {
+    clearInterval(watchdogTimer);
+    watchdogTimer = null;
+  }
+
+  function showToast(text) {
+    let box = $("toast");
+    if (!box) {
+      box = document.createElement("div");
+      box.id = "toast";
+      box.className = "toast";
+      document.body.appendChild(box);
+    }
+    box.textContent = text;
+    box.classList.add("show");
+    clearTimeout(box._timer);
+    box._timer = setTimeout(() => box.classList.remove("show"), 2600);
   }
 
   async function consumeStream(body, ctx) {
@@ -562,6 +635,7 @@
         buffer = buffer.slice(split + 2);
         const parsed = parseEvent(raw);
         if (!parsed) continue;
+        state.lastEventAt = Date.now();
         handleEvent(parsed.event, parsed.data, ctx);
         if (parsed.event === "done" || parsed.event === "error") finished = true;
       }
@@ -767,6 +841,11 @@
       '<span class="dots"><i></i><i></i><i></i></span>' +
       `<span>审查未通过，正在重做（第 ${attempt} 稿）…</span>`;
     view.bubble.insertBefore(hint, view.text);
+  }
+
+  function stopStream() {
+    state.abortReason = "";
+    if (state.controller) state.controller.abort();
   }
 
   function setStreaming(value) {
@@ -1004,6 +1083,9 @@
     $("newChat").addEventListener("click", newThread);
 
     $("stop").addEventListener("click", () => {
+      // 用户主动停止：清掉看门狗并立刻把界面恢复可用，不等 finally
+      state.abortReason = "";
+      clearWatchdog();
       if (state.controller) state.controller.abort();
     });
 

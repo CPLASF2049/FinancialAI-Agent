@@ -781,17 +781,18 @@ _ANALYSIS_PASSES = ("screening", "fundamental", "technical", "backtest")
 
 
 def _with_revision_note(answer: str, critique: dict[str, Any] | None) -> str:
-    """返工时在结论前加一行「已按审查意见修订」，让用户看得见这版是重做的。
+    """返工时加一句「这版重新取过数」，放在末尾当注脚。
 
-    确定性路径没有语言模型可以改写，所以它实际做的是**重新取数**（口径与上一版一致），
-    这里只负责把「这是第几版」说清楚，避免和上一版混淆。
+    确定性路径没有语言模型可以改写，所以它做的是**重新取数**（口径与上一版一致）。
+    这句提示放在末尾而不是开头：开头放提示会把用户的注意力从结论上挪开，
+    而且开头挂一句「已修订」看起来像正文的一部分。用斜体小注脚最不打扰。
     """
 
     if not critique or not critique.get("issues"):
         return answer
     count = int(critique.get("revision") or 1)
-    note = f"> 已按审查意见修订（第 {count + 1} 版），重新核对了下列问题涉及的取数口径。\n\n"
-    return note + answer
+    note = f"\n\n---\n\n*第 {count + 1} 版：已按审查意见重新取数核对。*"
+    return answer.rstrip() + note
 
 
 async def run_pass(
