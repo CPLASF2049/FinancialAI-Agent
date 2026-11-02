@@ -51,6 +51,8 @@ PASS_TOOLS: dict[str, tuple[str, ...]] = {
         "get_realtime_price",
         "get_daily_basic",
         "get_user_profile",
+        "mx_stock_screen",
+        "mx_news_search",
     ),
     # 基本面：估值、财报、宏观、指数对比。**不含任何 K 线与指标工具**。
     "fundamental": (
@@ -61,6 +63,9 @@ PASS_TOOLS: dict[str, tuple[str, ...]] = {
         "get_macro",
         "get_index_daily",
         "get_global_index_comparison",
+        "mx_financial_data",
+        "mx_news_search",
+        "mx_quota_status",
     ),
     # 技术面：量价、指标、形态、资金流。**不含任何财报与估值工具**。
     "technical": (
@@ -140,16 +145,32 @@ class ExpertOutcome:
         return AGENT_LABELS.get(self.agent, self.agent)
 
 
-def tools_for(agent: str) -> tuple[str, ...]:
-    """某专家可用的工具名（并集，含画像工具，已去重）。"""
+#: 妙想工具的前缀。它们是否出现在工具面里取决于用户有没有配 MX_APIKEY，
+#: 所以白名单里写了也要按「实际加载到没加载」过滤，否则 toolkit.subset 会报缺工具。
+MX_TOOL_PREFIX = "mx_"
 
-    return tuple(dict.fromkeys([*EXPERT_TOOLS.get(agent, ()), *MEMORY_TOOLS]))
+
+def _usable(names: tuple[str, ...], available: set[str] | None) -> tuple[str, ...]:
+    if available is None:
+        return names
+    return tuple(name for name in names if name in available or not name.startswith(MX_TOOL_PREFIX))
 
 
-def tools_for_pass(name: str) -> tuple[str, ...]:
+def tools_for(agent: str, available: set[str] | None = None) -> tuple[str, ...]:
+    """某专家可用的工具名（并集，含画像工具，已去重）。
+
+    ``available`` 是本次实际加载到的工具名集合；传了就顺手滤掉没挂载的可选工具。
+    """
+
+    names = tuple(dict.fromkeys([*EXPERT_TOOLS.get(agent, ()), *MEMORY_TOOLS]))
+    return _usable(names, available)
+
+
+def tools_for_pass(name: str, available: set[str] | None = None) -> tuple[str, ...]:
     """某个子职责可用的工具名（含画像工具，已去重）。"""
 
-    return tuple(dict.fromkeys([*PASS_TOOLS.get(name, ()), *MEMORY_TOOLS]))
+    names = tuple(dict.fromkeys([*PASS_TOOLS.get(name, ()), *MEMORY_TOOLS]))
+    return _usable(names, available)
 
 
 async def run_expert(
@@ -271,7 +292,7 @@ async def _run_llm(
     total_calls = 0
 
     for name in passes:
-        tools = toolkit.subset(tools_for_pass(name))
+        tools = toolkit.subset(tools_for_pass(name, set(toolkit.by_name)))
         prompt = build_expert_prompt(name, profile_summary)
 
         context_lines = [f"用户请求：{question}"]

@@ -28,10 +28,14 @@ async def test_expert_tool_subsets_are_distinct(offline_env) -> None:
     from finagent.graph.experts import EXPERT_TOOLS, PASS_TOOLS, tools_for
 
     async with open_app() as app:
+        available = set(app.toolkit.by_name)
         for agent in EXPERT_AGENTS:
-            subset = app.toolkit.subset(tools_for(agent))
+            subset = app.toolkit.subset(tools_for(agent, available))
             assert subset, agent
             assert all(tool.name in app.toolkit.by_name for tool in subset)
+        # 没配 MX_APIKEY 时，妙想工具不该出现在任何子职责的实际工具集里
+        assert "mx_financial_data" not in available
+        assert "mx_financial_data" not in tools_for("researcher", available)
     # 节点只有 3 个，但子职责的工具白名单仍然互不重叠
     assert "compute_indicators" in PASS_TOOLS["technical"]
     assert "compute_indicators" not in PASS_TOOLS["fundamental"]

@@ -37,6 +37,8 @@ SERVERS: dict[str, str] = {
     "market": "finagent.mcp_servers.market",
     "quant": "finagent.mcp_servers.quant",
     "portfolio": "finagent.mcp_servers.portfolio",
+    # 妙想（东方财富官方技能包）：只有装了技能且配了 MX_APIKEY 才挂载
+    "mx": "finagent.mcp_servers.mx",
 }
 
 
@@ -103,6 +105,10 @@ def _child_env(settings: Settings) -> dict[str, str]:
     )
     if settings.tushare_token:
         env["FINAGENT_TUSHARE_TOKEN"] = settings.tushare_token
+    if settings.mx_api_key:
+        env["MX_APIKEY"] = settings.mx_api_key
+    if settings.mx_skills_dir:
+        env["FINAGENT_MX_SKILLS_DIR"] = settings.mx_skills_dir
     return env
 
 
@@ -143,6 +149,14 @@ async def open_toolkit(
 
     resolved = settings or get_settings()
     chosen = list(servers or SERVERS.keys())
+    # 妙想是可选项：没装技能或没配 Key 就不要把它挂进工具面，
+    # 否则模型会看到一堆注定报错的工具，白占上下文。
+    if servers is None and "mx" in chosen:
+        from finagent.core import mx as mx_bridge
+
+        if not mx_bridge.is_available(resolved):
+            chosen.remove("mx")
+            log.info("未检测到 MX_APIKEY 或妙想技能包，跳过 mx 服务器")
     mode: Transport = transport or os.environ.get("FINAGENT_MCP_TRANSPORT", "inprocess")  # type: ignore[assignment]
     if mode not in ("stdio", "inprocess"):
         raise ConfigurationError(

@@ -8,6 +8,7 @@
 ``finagent-market``     :mod:`finagent.mcp_servers.market`     行情、基本面、宏观
 ``finagent-quant``      :mod:`finagent.mcp_servers.quant`      指标、选股、回测
 ``finagent-portfolio``  :mod:`finagent.mcp_servers.portfolio`  持仓、预警、画像
+``finagent-mx``         :mod:`finagent.mcp_servers.mx`       妙想数据/资讯/选股（可选）
 ======================  ===============================  ==========================
 
 可以直接用 ``python -m finagent.mcp_servers <name>`` 启动，或使用
@@ -18,7 +19,7 @@ from __future__ import annotations
 
 import sys
 
-SERVERS = ("market", "quant", "portfolio")
+SERVERS = ("market", "quant", "portfolio", "mx")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -42,6 +43,8 @@ def main(argv: list[str] | None = None) -> None:
         from finagent.mcp_servers.market import main as run
     elif name == "quant":
         from finagent.mcp_servers.quant import main as run
+    elif name == "mx":
+        from finagent.mcp_servers.mx import main as run
     else:
         from finagent.mcp_servers.portfolio import main as run
     run()

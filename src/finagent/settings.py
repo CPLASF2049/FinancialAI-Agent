@@ -117,6 +117,24 @@ class Settings(BaseSettings):
         validation_alias="FINAGENT_MAX_AGENT_HOPS",
         description="Upper bound on supervisor -> expert hand-offs per user turn.",
     )
+    #: 东方财富妙想 Skills 的 API Key（环境变量 MX_APIKEY）。
+    mx_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("MX_APIKEY", "FINAGENT_MX_APIKEY"),
+        description="妙想 Skills 的 API Key。",
+    )
+    #: 妙想技能包所在目录；留空则用 ~/skills。
+    mx_skills_dir: str = Field(
+        default="",
+        validation_alias="FINAGENT_MX_SKILLS_DIR",
+        description="妙想技能包目录。",
+    )
+    #: 妙想接口每天最多调用多少次（官方按天限次）。
+    mx_daily_limit: int = Field(
+        default=30,
+        validation_alias="FINAGENT_MX_DAILY_LIMIT",
+        description="妙想接口每日调用上限。",
+    )
     #: 一轮对话的墙钟预算（秒）。超过就停止派发新专家，用已有结论收尾。
     #: 这是「卡死」的最终兜底：模型再慢，一轮也不会无限制跑下去。
     max_turn_seconds: float = Field(

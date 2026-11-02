@@ -41,6 +41,9 @@ def offline_env(monkeypatch: pytest.MonkeyPatch, data_dir: Path) -> Path:
     """Point the whole stack at the offline provider and a scratch data dir."""
 
     monkeypatch.setenv("FINAGENT_PROVIDER", "offline")
+    # 妙想技能包可能真的装着（用户机器上），但测试绝不该挂载它：
+    # 指到一个不存在的目录，is_available() 就是 False，工具面稳定在 41 个。
+    monkeypatch.setenv("FINAGENT_MX_SKILLS_DIR", str(data_dir / "no-mx-skills"))
     # .env 里可能写着「必须真实数据」，测试明确要离线 fixture，所以这里覆盖掉
     monkeypatch.setenv("FINAGENT_REQUIRE_REAL_DATA", "false")
     monkeypatch.setenv("FINAGENT_TUSHARE_TOKEN", "")
