@@ -296,7 +296,9 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
                 "completed_agents": [agent],
                 "artifacts": {**(state.get("artifacts") or {}), **outcome.artifacts},
                 "trace": outcome.trace,
-                "errors": outcome.errors,
+                # 「当前数据源不提供 X」是预期内的能力边界，不是故障：
+                # 模型换个工具就能拿到数据，把它当错误弹给用户只会造成困惑。
+                "errors": [error for error in outcome.errors if not _expected_gap(error)],
                 "next_agent": "critic",
             }
 
@@ -337,7 +339,13 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
             return Command(goto="supervisor", update={})
 
         question = state.get("question") or ""
-        trace = [item for item in (state.get("trace") or []) if item.get("agent") == agent]
+        # 兼容两种记录格式：裸 agent 名，或早期的 "agent:stage"。
+        # 早期格式会让按 agent 精确匹配永远落空，审查者就会一直误判「没调工具」。
+        trace = [
+            item
+            for item in (state.get("trace") or [])
+            if item.get("agent") == agent or str(item.get("agent") or "").startswith(f"{agent}:")
+        ]
         tool_calls = sum(1 for item in trace if item.get("ok"))
         evidence = " ".join(str(item.get("preview") or "") for item in trace)
         others = [item for item in answers if item.get("agent") != agent]
@@ -673,6 +681,16 @@ _STOP_LABELS = {
 }
 
 
+#: 「数据源不提供某能力」这类错误对用户没有意义（换个工具就有数据），
+#: 只留在 trace 与日志里，不进交付内容。
+_GAP_MARKERS = ("不提供", "不支持", "not supported")
+
+
+def _expected_gap(error: str) -> bool:
+    text = str(error or "")
+    return any(marker in text for marker in _GAP_MARKERS)
+
+
 def _hash(text: str) -> str:
     """结论指纹：用来判断「返工之后有没有实质变化」。"""
 
@@ -715,6 +733,16 @@ def _turn_exceeded(state: FinState, settings: Settings) -> str | None:
     # critic 里已经用 total_left 挡住了，这里再拦会把 max_total_revisions=0 变成
     # 「一步都不许走」，那显然不是用户的意图。
     return None
+
+
+def _deadline(state: FinState, settings: Settings) -> float | None:
+    """本轮的截止时刻；``turn_started`` 缺失时返回 ``None``（不限）。"""
+
+    started = state.get("turn_started")
+    if not isinstance(started, (int, float)) or started <= 0:
+        return None
+    # 多给 5 秒，让节点里能走完收尾逻辑再停
+    return float(started) + settings.max_turn_seconds + 5.0
 
 
 def _describe_stop(reason: str, state: FinState) -> str:

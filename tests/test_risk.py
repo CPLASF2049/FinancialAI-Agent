@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from finagent.graph.risk import (
     check_risk_preference,
     check_source_annotation,
@@ -142,3 +144,33 @@ def test_held_codes_from_artifacts() -> None:
 
     assert held_codes_from({}) is None
     assert held_codes_from({"portfolio": {"positions": []}}) == set()
+
+
+# ----------------------------------------------------------------------
+# 数据来源标注：按 provider 给正确的名字
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("provider", "expected"),
+    [
+        ("eastmoney", "东方财富行情"),
+        ("tushare", "Tushare"),
+        ("offline", "离线演示数据"),
+    ],
+)
+def test_source_label_matches_provider(provider: str, expected: str) -> None:
+    """以前这里是 ``"Tushare" if provider == "tushare" else "离线演示数据"``，
+    eastmoney 被标成「离线演示数据」——用户看到来源是错的。"""
+
+    from finagent.graph.risk import check_source_annotation
+
+    text, _flags, _actions = check_source_annotation("茅台现价 1439 元", provider=provider)
+    assert expected in text
+
+
+def test_eastmoney_is_never_labelled_as_demo() -> None:
+    from finagent.graph.risk import check_source_annotation
+
+    text, flags, _actions = check_source_annotation("茅台现价 1439 元", provider="eastmoney")
+    assert "离线演示数据" not in text
+    assert "不是真实行情" not in text
+    assert not any(flag.get("type") == "demo_data" for flag in flags)

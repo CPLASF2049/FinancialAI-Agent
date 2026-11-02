@@ -122,7 +122,7 @@ def screen(provider: MarketDataProvider, criteria: ScreenCriteria) -> dict[str, 
     if criteria.industries and not has_industry:
         raise InvalidArgument(
             "当前数据源没有提供行业分类，无法按行业筛选。",
-            hint="稍后重试（东财恢复后会自动带上行业），或改用 FINAGENT_PROVIDER=tushare。",
+            hint="稍后重试：东财恢复后会自动带上行业分类。",
         )
 
     frame["total_mv_yi"] = frame["total_mv"] / 10_000.0
@@ -201,10 +201,7 @@ def screen(provider: MarketDataProvider, criteria: ScreenCriteria) -> dict[str, 
     complete = getattr(provider, "last_universe_complete", None)
     if complete is False:
         payload["universe_complete"] = False
-        payload["warning"] = (
-            "本次只取到部分市场的股票列表，命中结果可能不完整；"
-            "稍后重试或改用 tushare 数据源可获全量。"
-        )
+        payload["warning"] = "本次只取到部分市场的股票列表，命中结果可能不完整；稍后重试可获全量。"
     return payload
 
 

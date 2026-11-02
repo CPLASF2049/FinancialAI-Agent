@@ -436,8 +436,8 @@ class EastmoneyProvider(MarketDataProvider):
         from finagent.errors import ProviderUnavailable
 
         raise ProviderUnavailable(
-            "东方财富数据源不提供利润表。",
-            hint="需要财报/宏观数据请配置 Tushare（FINAGENT_PROVIDER=tushare）。",
+            "行情数据源不提供利润表。",
+            hint="财报数据请用 mx_financial_data（妙想）；本工具只覆盖行情与估值。",
         )
 
     # ------------------------------------------------------------------

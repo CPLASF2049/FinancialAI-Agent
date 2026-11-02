@@ -436,6 +436,7 @@ copy .env.example .env
 | 数据源 | `FINAGENT_PROVIDER` | 需要 token | 覆盖范围 |
 | --- | --- | --- | --- |
 | **东方财富**（默认） | `eastmoney` | **不需要** | 日线、实时报价、PE/PB/市值、指数、全市场选股、交易日历 |
+| 妙想 Skills | （独立） | 需要 MX_APIKEY | 财报、股东、高管、公司简介、资讯、自然语言选股 |
 | Tushare Pro | `tushare` | 需要 | 上面全部 + 财报、宏观、资金流、龙虎榜、涨跌停 |
 | 离线 fixture | `offline` | 不需要 | 合成数据，**只用于测试与演示** |
 
@@ -470,6 +471,16 @@ python -c "from finagent.settings import get_settings; s=get_settings(); print(s
 ```
 
 环境变量与 `.env` 都设了值时，**环境变量优先**。排查「改了没生效」先看这一条。
+
+### 财报数据从哪来
+
+行情源（东方财富）**只提供价格与估值**，不提供利润表。所以问「近三年净利润」这类问题时：
+
+* 研究 Agent 会调用 `mx_financial_data`（妙想）取财报；
+* `get_income_statement` 这类本地工具会明确返回「行情源不提供」，**不会编造数字**；
+* 这类「本数据源不支持某能力」的提示属于预期边界，不会再当作错误弹到回答里。
+
+不需要 Tushare 也能查财报——妙想就够了。Tushare 只是可选的另一条路（覆盖更全，要 token）。
 
 ### 妙想 Skills（可选，官方技能包）
 

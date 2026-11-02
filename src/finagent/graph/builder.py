@@ -261,7 +261,7 @@ class FinAgentApp:
         if resolved.provider == "offline" and resolved.require_real_data:
             raise ConfigurationError(
                 "FINAGENT_REQUIRE_REAL_DATA=true，但当前仍是 offline 数据源；"
-                "请设置 FINAGENT_PROVIDER=eastmoney 或 tushare。"
+                "请设置 FINAGENT_PROVIDER=eastmoney。"
             )
         log.info(
             "图已就绪：%d 个 MCP 工具（%s），%d 个专家，checkpointer=%s",

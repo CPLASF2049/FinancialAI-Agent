@@ -167,6 +167,15 @@ def check_strong_directives(
     return rewritten, flags, actions
 
 
+#: 数据源 -> 脚注里显示的名字。**不要写 else 分支兜底成「离线演示数据」**：
+#: 之前就是这么写的，结果 eastmoney 也被标成离线数据，用户看到的来源完全是错的。
+SOURCE_LABELS = {
+    "tushare": "Tushare",
+    "eastmoney": "东方财富行情",
+    "offline": "离线演示数据",
+}
+
+
 def check_source_annotation(
     text: str, *, provider: str, as_of: str | None = None
 ) -> tuple[str, list[dict[str, str]], list[str]]:
@@ -180,7 +189,7 @@ def check_source_annotation(
 
     if has_numbers and not marked:
         date = as_of or cal.format_date(cal.latest_trading_day())
-        source = "Tushare" if provider == "tushare" else "离线演示数据"
+        source = SOURCE_LABELS.get(provider, provider)
         text += (
             f"\n\n_数据来源：{source}，截至 {date}。以上为工具返回的原始数据整理，不构成投资建议。_"
         )
@@ -199,7 +208,7 @@ def check_source_annotation(
     if provider == "offline" and has_numbers and not text.lstrip().startswith(">"):
         text = (
             "> ⚠️ **离线演示数据**：以下数字来自内置 fixture，**不是真实行情**，"
-            "仅用于演示与测试。要真实数据请设置 `FINAGENT_PROVIDER=tushare`。\n\n" + text
+            "仅用于测试。\n\n" + text
         )
         flags.append(
             _flag(

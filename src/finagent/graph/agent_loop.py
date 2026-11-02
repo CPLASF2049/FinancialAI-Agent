@@ -38,12 +38,17 @@ except Exception:  # pragma: no cover - very old LangGraph
 
 @dataclass(slots=True)
 class ToolCallRecord:
+    #: **裸的 Agent 名**（researcher / quant / alert）。审查者按这个名字挑出本轮证据，
+    #: 所以这里绝不能拼子职责后缀——拼了就变成 "researcher:screening"，按 "researcher"
+    #: 精确匹配永远匹配不到，审查者会一直误判「没有调用任何工具」。
     agent: str
     tool: str
     args: dict[str, Any]
     ok: bool = True
     preview: str = ""
     error: str | None = None
+    #: 这次调用属于哪个子职责（screening / fundamental / technical …），仅用于观测。
+    stage: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -53,6 +58,8 @@ class ToolCallRecord:
             "ok": self.ok,
             "preview": self.preview,
         }
+        if self.stage:
+            payload["stage"] = self.stage
         if self.error:
             payload["error"] = self.error
         return payload
@@ -142,8 +149,15 @@ async def run_tool_loop(
     system_prompt: str,
     user_messages: list[Any],
     max_iterations: int = 8,
+    #: 子职责名（screening / fundamental …）。只写进记录供观测，
+    #: **不**拼进 agent 名——审查者按裸 agent 名挑证据。
+    stage: str = "",
+    #: 本轮截止时刻（``time.monotonic()`` 绝对值）。到了就停，别把整轮拖成几分钟。
+    deadline: float | None = None,
 ) -> LoopResult:
     """跑到模型不再调用工具为止，并逐次记录每次调用。"""
+
+    import time
 
     from langchain_core.messages import SystemMessage, ToolMessage
 
@@ -159,6 +173,13 @@ async def run_tool_loop(
     emit({"event": "agent_start", "agent": agent, "tools": sorted(by_name)})
 
     for iteration in range(1, max_iterations + 1):
+        # 时间预算要能穿透到节点内部：模型慢的时候，光靠 supervisor 之间检查
+        # 拦不住单个专家——它内部可能连着跑好几次工具调用，把一轮拖到几分钟。
+        if deadline is not None and time.monotonic() > deadline:
+            log.warning("工具循环已超时（第 %d 轮前），停止继续调用工具", iteration)
+            result.stopped_reason = "deadline"
+            break
+
         result.iterations = iteration
         response = await _call_model(bound, messages, agent=agent, emit=emit)
         messages.append(response)
@@ -174,7 +195,7 @@ async def run_tool_loop(
             args = call.get("args") or {}
             call_id = call.get("id") or f"{agent}-{iteration}-{name}"
 
-            record = ToolCallRecord(agent=agent, tool=name, args=args)
+            record = ToolCallRecord(stage=stage, agent=agent, tool=name, args=args)
             tool = by_name.get(name)
             if tool is None:
                 record.ok = False

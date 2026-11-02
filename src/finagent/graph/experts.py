@@ -183,6 +183,8 @@ async def run_expert(
     prior_artifacts: dict[str, Any] | None = None,
     critique: dict[str, Any] | None = None,
     passes: list[str] | None = None,
+    #: 本轮截止时刻（monotonic）。传给工具循环，避免单个节点把整轮拖过预算。
+    deadline: float | None = None,
 ) -> ExpertOutcome:
     """执行一个专家，把两种模式统一成 :class:`ExpertOutcome`。
 
@@ -208,6 +210,7 @@ async def run_expert(
         profile_summary=profile_summary,
         prior_artifacts=prior_artifacts,
         critique=critique,
+        deadline=deadline,
     )
 
 
@@ -284,6 +287,7 @@ async def _run_llm(
     profile_summary: str,
     prior_artifacts: dict[str, Any] | None,
     critique: dict[str, Any] | None,
+    deadline: float | None = None,
 ) -> ExpertOutcome:
     sections: list[str] = []
     artifacts: dict[str, Any] = {}
@@ -308,7 +312,10 @@ async def _run_llm(
             context_lines.append(_revision_block(critique))
 
         loop = await run_tool_loop(
-            agent=f"{agent}:{name}",
+            # 传裸 agent：审查者靠它找本轮的证据，拼上子职责就找不到了
+            agent=agent,
+            stage=name,
+            deadline=deadline,
             model=model,
             tools=tools,
             system_prompt=prompt,
