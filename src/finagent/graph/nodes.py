@@ -748,6 +748,21 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
         # risk_guard 可能已经改写过正文（风控拦截），优先用它的结果
         body = state.get("answer") or _compose_answer(state)
 
+        # 部分成功：按任务分解判定必做/可选，缺什么就明说，但不拖累已成功的内容
+        try:
+            from finagent.graph.tasking import assess, notice_for, plan_for
+
+            plan = plan_for(state.get("question") or "")
+            assessment = assess(plan, list(state.get("trace") or []))
+            note = notice_for(assessment)
+            if note:
+                body = f"{body}\n\n> {note}"
+            recorder(str(state.get("task_id") or "")).record(
+                "turn:assessment", **assessment.to_dict()
+            )
+        except Exception as exc:  # noqa: BLE001 - 判定失败不影响交付
+            log.debug("任务评估失败：%s", exc)
+
         recorder(str(state.get("task_id") or "")).record(
             "turn:end",
             status=str(state.get("stop_reason") or "completed"),
