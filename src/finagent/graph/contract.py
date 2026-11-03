@@ -56,6 +56,8 @@ class Termination(StrEnum):
     BUDGET_TOKENS = "budget_tokens"
     BUDGET_WALLCLOCK = "budget_wallclock"
     TOOL_FAILURE = "tool_failure"
+    #: 连续多轮既没有新工具调用、也没有新文本——在原地打转
+    NO_PROGRESS = "no_progress"
     MODEL_FAILURE = "model_failure"
     CONTRACT_VIOLATION = "contract_violation"
     CANCELLED = "cancelled"

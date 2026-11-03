@@ -234,3 +234,49 @@ def test_items_accumulate_tokens(layer: Layer) -> None:
     context = AgentContext()
     context.add(_Msg("x" * 400), layer)
     assert context.tokens() >= 100
+
+def test_runtime_treats_empty_reply_as_failure() -> None:
+    """空回复不是「完成」——那正是用户说的「蹦不出字」。
+
+    给一次重试机会；仍然为空就明确报 model_failure，而不是假装跑完。
+    """
+
+    empty = [_Reply("") for _ in range(10)]
+    runtime = AgentRuntime(
+        agent="researcher",
+        model=_Model(empty),
+        tools=[],
+        system_prompt="sys",
+        max_iterations=10,
+    )
+    outcome = _run(runtime.run([_Msg("问题")], emit=lambda _e: None))
+    assert outcome.stopped_reason == "model_failure"
+    assert outcome.text, "失败也要给一句可读的说明，不能留空白"
+    assert runtime.budget.llm_calls <= 3
+
+
+def test_runtime_stops_when_no_progress() -> None:
+    """一直调同一个失败工具 -> 没有成功调用也没有文本 -> 判定原地打转。
+
+    这是「烧 token 但跑不出结果」的兜底：宁可早停，也不要空转到预算耗尽。
+    """
+
+    class _Broken:
+        name = "broken"
+
+        async def ainvoke(self, args):
+            raise OSError("连不上")
+
+    loop_replies = [
+        _Reply(tool_calls=[{"name": "broken", "args": {}, "id": f"c{i}"}]) for i in range(10)
+    ]
+    runtime = AgentRuntime(
+        agent="researcher",
+        model=_Model(loop_replies),
+        tools=[_Broken()],
+        system_prompt="sys",
+        max_iterations=10,
+    )
+    outcome = _run(runtime.run([_Msg("问题")], emit=lambda _e: None))
+    assert outcome.stopped_reason in ("no_progress", "tool_failure")
+    assert runtime.budget.llm_calls <= 5

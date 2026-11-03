@@ -259,6 +259,7 @@ _REASON_MAP = {
     "budget_tool_calls": "max_iterations",
     "budget_cost": "max_iterations",
     "tool_failure": "tool_failure",
+    "no_progress": "no_progress",
     "cancelled": "cancelled",
 }
 

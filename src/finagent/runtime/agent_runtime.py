@@ -100,6 +100,12 @@ class AgentRuntime:
         #: 每次工具调用的明细（供上层转成 trace/事件）
         self.records: list[dict[str, Any]] = []
         self.token_budget = token_budget
+        #: 无进展守卫：连续两轮没有新增工具调用、也没有新增文本，就判定原地打转。
+        #: 这类情况以前会一直跑到预算耗尽，token 全烧在「重复说同一句」上。
+        self._stall_rounds = 0
+        self._last_progress = -1
+        #: 连续返回空内容的次数
+        self._empty_rounds = 0
         self._tokens = 0
         self.context = AgentContext()
         self.context.add(_system(system_prompt), Layer.CORE)
@@ -146,11 +152,48 @@ class AgentRuntime:
                 outcome.output_tokens += int(usage.get("output_tokens") or 0)
                 self._tokens = outcome.input_tokens + outcome.output_tokens
 
+            # 进展 = **成功**的工具调用数 + 文本长度。
+            # 不能用「总调用数」：一直失败一直重试也会让它增长，
+            # 那正是「烧 token 但没结果」的形态，必须能被识别为无进展。
+            progress = self.executor.stats.succeeded + len(_content_to_text(response))
+            if progress <= self._last_progress:
+                self._stall_rounds += 1
+                if self._stall_rounds >= 2:
+                    # 如果停滞的原因是「工具一直失败」，报更具体的原因，
+                    # 免得把「接口坏了」误报成「模型在打转」。
+                    failed = self.executor.stats.max_consecutive_failures
+                    outcome.stopped_reason = (
+                        "tool_failure"
+                        if failed > 0 and not self.executor.stats.succeeded
+                        else "no_progress"
+                    )
+                    log.warning(
+                        "连续 %d 轮没有新进展（连续失败 %d 次），停止本轮",
+                        self._stall_rounds,
+                        failed,
+                    )
+                    outcome.text = outcome.text or _content_to_text(response)
+                    break
+            else:
+                self._stall_rounds = 0
+                self._last_progress = progress
+
             tool_calls = getattr(response, "tool_calls", None) or []
             if not tool_calls:
-                outcome.text = _content_to_text(response)
-                outcome.stopped_reason = "completed"
-                break
+                answer = _content_to_text(response).strip()
+                if answer:
+                    outcome.text = answer
+                    outcome.stopped_reason = "completed"
+                    break
+                # 空回复不是「完成」——用户看到的就是「蹦不出字」。
+                # 给一次重试机会，仍然为空就明确报失败，而不是假装跑完了。
+                self._empty_rounds += 1
+                log.warning("模型返回空内容（第 %d 次）", self._empty_rounds)
+                if self._empty_rounds >= 2:
+                    outcome.stopped_reason = "model_failure"
+                    outcome.text = "模型连续两次返回空内容，已停止本轮。"
+                    break
+                continue
 
             if self.executor.stats.max_consecutive_failures >= self.budget.max_retries + 3:
                 outcome.stopped_reason = "tool_failure"
