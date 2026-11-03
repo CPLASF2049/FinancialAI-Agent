@@ -171,8 +171,42 @@ async def api_info(request: Request) -> Response:
                 for item in describe_experts()
             ],
             "max_hops": settings.max_agent_hops,
+            # 排查「改了没生效」：这里给出本进程加载的代码版本与启动时刻。
+            # 前端/CLI 都能据此确认跑的是不是最新代码。
+            "build": _build_stamp(),
         }
     )
+
+
+def _build_stamp() -> dict[str, str]:
+    """本进程加载的代码版本与启动时间。"""
+
+    import os
+    import subprocess
+    import time
+
+    sha = os.environ.get("FINAGENT_BUILD_SHA", "")
+    if not sha:
+        try:
+            sha = (
+                subprocess.run(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                ).stdout.strip()
+                or "unknown"
+            )
+        except Exception:  # noqa: BLE001 - 拿不到版本不是错误
+            sha = "unknown"
+
+    from finagent.graph.builder import APP_STARTED_AT
+
+    return {
+        "sha": sha,
+        "started": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(APP_STARTED_AT)),
+    }
 
 
 async def api_llm(request: Request) -> Response:

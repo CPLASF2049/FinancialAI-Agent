@@ -44,6 +44,10 @@ from finagent.llm import build_chat_model
 from finagent.logging import get_logger
 from finagent.settings import Settings, get_settings
 
+#: 进程启动时刻（epoch 秒）。用来判断「跑的是不是新代码」——
+#: 改了代码但没重启进程，是这类项目最常见的一次性困惑。
+APP_STARTED_AT = time.time()
+
 log = get_logger("graph.builder")
 
 

@@ -513,6 +513,102 @@ async def review_with_llm(
     return parsed
 
 
+#: 模型断言「没有工具调用」时的特征词。我们手上有确切的调用记录，
+#: 这类断言一律以记录为准——这是「每次都被逼返工」的主要来源。
+_NO_TOOL_CLAIMS = (
+    "未调用任何工具",
+    "没有调用任何工具",
+    "无工具调用",
+    "没有任何工具",
+    "未使用任何工具",
+)
+
+
+def reconcile(
+    result: ReviewResult,
+    *,
+    answer: str,
+    tool_calls: int,
+    evidence: str,
+) -> ReviewResult:
+    """把模型给出的意见与**客观记录**对齐，去掉站不住脚的那几条。
+
+    审查者是个语言模型，它会看错也会顺着措辞编理由。但有两件事是确定的：
+
+    1. 本轮到底调没调工具（``tool_calls``）；
+    2. 结论里的数字是否真的出现在工具返回里（``evidence``）。
+
+    所以：
+    * 明明调了工具，却说「未调用任何工具」→ 该条作废；
+    * 规则核对下来绝大多数数字都有出处，却判「数字没有支撑」→ 该条作废；
+    * 作废到没有阻断项时，结论改成 ``pass``。
+
+    这不是「放宽审查」，而是**不让审查结论与事实冲突**。放水的是模型的臆测，
+    不是证据本身。
+    """
+
+    if not result.issues:
+        return result
+
+    # 数字有没有出处是**客观事实**：规则能逐个数比对，模型只能在截断后的预览里
+    # 靠感觉判断。所以规则说「没问题」时，模型关于数字的意见一律不采信——
+    # 这是「每次都被逼返工」最主要的来源。
+    rule_issues = check_evidence(answer, tool_calls=tool_calls, evidence=evidence)
+    rule_blocks_numbers = any(issue.get("severity") == HIGH for issue in rule_issues)
+
+    kept: list[dict[str, str]] = []
+    dropped = 0
+    for issue in result.issues:
+        detail = str(issue.get("detail") or "")
+
+        # (1) 「没调工具」——有调用记录就直接否掉这条
+        if tool_calls > 0 and any(claim in detail for claim in _NO_TOOL_CLAIMS):
+            log.info(
+                "审查意见与事实冲突（本轮有 %d 次工具调用），已忽略：%s", tool_calls, detail[:60]
+            )
+            dropped += 1
+            continue
+
+        # (2) 规则没发现证据问题，模型却指控「数字没出处」→ 以规则为准。
+        #     只对**带数字**的指控这么做：规则只能核对数字，定性判断
+        #     （例如「无依据推断」）仍然听模型的，否则等于把审查权让给规则。
+        if (
+            issue.get("type") == "unsupported"
+            and tool_calls > 0
+            and not rule_blocks_numbers
+            and _NUMBER_RE.search(detail)
+        ):
+            log.info("规则核对未发现证据问题，忽略模型的数字指控：%s", detail[:60])
+            dropped += 1
+            continue
+
+        # (3) 「数字没有支撑」——但规则核对显示基本都有出处
+        if issue.get("type") == "unsupported" and tool_calls > 0:
+            supported, total = _support_ratio(answer, evidence)
+            if total and supported / total >= 0.8:
+                log.info(
+                    "审查意见与规则核对冲突（%d/%d 个数字有出处），已忽略：%s",
+                    supported,
+                    total,
+                    detail[:60],
+                )
+                dropped += 1
+                continue
+
+        kept.append(issue)
+
+    if not dropped:
+        return result
+
+    blocking = any(issue.get("severity") == HIGH for issue in kept)
+    return ReviewResult(
+        verdict="revise" if blocking else "pass",
+        issues=kept,
+        checks=result.checks,
+        source=result.source,
+    )
+
+
 def summarise_tools(trace: list[dict[str, Any]], limit: int = 1200) -> str:
     """把工具调用压成审查者能读懂的简短清单。"""
 

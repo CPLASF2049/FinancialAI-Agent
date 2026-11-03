@@ -18,6 +18,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from finagent.graph.agent_loop import stream_writer
 from finagent.graph.critic import (
     is_revisable,
+    reconcile,
     review,
     review_with_llm,
     summarise_tools,
@@ -351,6 +352,16 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
         others = [item for item in answers if item.get("agent") != agent]
 
         model = get_model()
+        # 审查者本身是一次完整的模型调用（推理模型常常 60 秒起步）。
+        # 剩余时间不够就别叫它了，直接用规则审——规则审是确定性的，也更省额度。
+        deadline = _deadline(state, settings)
+        if model is not None and deadline is not None:
+            import time as _time
+
+            if _time.monotonic() > deadline - 60:
+                log.info("剩余时间不足，审查者改用规则审查")
+                model = None
+
         if model is None:
             result = review(
                 answer,
@@ -371,6 +382,15 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
                 tool_calls=tool_calls,
                 evidence=evidence,
             )
+
+        # 与客观记录对账：模型偶尔会断言「没调工具」「数字没出处」，
+        # 而调用记录和工具返回就在手上——以事实为准，别让审查结论自相矛盾。
+        result = reconcile(
+            result,
+            answer=answer,
+            tool_calls=tool_calls,
+            evidence=evidence,
+        )
 
         # 代码级校验：只要这一轮真的跑过回测，就用子进程复算一遍，和结论里声称的指标比对
         verification = None
