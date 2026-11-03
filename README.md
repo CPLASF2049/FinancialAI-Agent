@@ -431,6 +431,39 @@ copy .env.example .env
 > `.env` 并立刻生效，见[在界面里接入大模型](#在界面里接入大模型不用改文件不用重启)。
 > 手动改文件适合批量部署或 CI。
 
+### 2.0 · 数据源网关
+
+免费行情接口会限流、会断连——这是常态，不是异常。所以 2.0 在 provider 之上加了一层
+**策略网关**，45 个工具不用各自实现重试：
+
+| 机制 | 说明 |
+| --- | --- |
+| 能力预检 | `get_moneyflow` 在执行前就知道当前数据源不支持，不浪费一次模型轮次 |
+| 有限重试 | 默认 3 次，指数退避 + 抖动（避免同频重试继续冲击接口） |
+| 熔断 | 连续失败达阈值后冷却 30 秒，期间直接返回 `CIRCUIT_OPEN` |
+| 请求缓存 | 行情快照 5 秒、日线 60 秒、选股池 300 秒 |
+| Singleflight | 并发相同请求合并成一次，不会同时打十个 |
+
+返回值统一成三种状态，**接口失败的空 DataFrame 不再包装成成功**：
+
+```
+SUCCESS               数据可用
+PARTIAL_SUCCESS       有缺失但仍可用（带 warnings）
+PROVIDER_UNAVAILABLE  拿不到，并说明原因
+```
+
+错误码是稳定的、可分支的：`CAPABILITY_NOT_SUPPORTED` / `REMOTE_DISCONNECTED` /
+`TIMEOUT` / `CIRCUIT_OPEN` / `NETWORK_ERROR`。模型和前端都不用再解析异常文本。
+
+```python
+from finagent.providers import get_provider
+
+provider = get_provider()
+provider.supports("moneyflow")        # 执行前就能问
+provider.call("daily_price", "600519.SH")   # 带策略的调用，返回结构化结果
+provider.stats()                      # calls / retries / failures / cache_hits
+```
+
 ### 数据源：默认就是真实行情
 
 | 数据源 | `FINAGENT_PROVIDER` | 需要 token | 覆盖范围 |

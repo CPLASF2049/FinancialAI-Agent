@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Any
 
 from finagent.errors import ConfigurationError
 from finagent.providers.base import MarketDataProvider
@@ -52,13 +53,31 @@ def _cached(provider_name: str, token: str | None) -> MarketDataProvider:
     return build_provider(settings)
 
 
+#: 熔断器按 provider+方法共享，跨调用保留状态（否则熔断毫无意义）。
+_BREAKERS: dict[str, Any] = {}
+
+
 def get_provider(*, refresh: bool = False) -> MarketDataProvider:
-    """进程级的数据源单例。"""
+    """进程级的数据源单例。
+
+    返回的是**套了策略网关**的 provider：重试、退避、熔断、缓存、能力预检
+    都在网关里统一完成，45 个 MCP 工具不需要各自实现一遍。
+    """
 
     settings = get_settings()
     if refresh:
         _cached.cache_clear()
-    return _cached(settings.provider, settings.tushare_token)
+        _BREAKERS.clear()
+    raw = _cached(settings.provider, settings.tushare_token)
+    # 网关本身也要缓存，否则每次调用都会重建缓存与 singleflight 状态
+    return _gateway(raw)
+
+
+@lru_cache(maxsize=8)
+def _gateway(raw: MarketDataProvider) -> MarketDataProvider:
+    from finagent.providers.gateway import ProviderGateway
+
+    return ProviderGateway(raw, breakers=_BREAKERS)
 
 
 def provider_name() -> str:
