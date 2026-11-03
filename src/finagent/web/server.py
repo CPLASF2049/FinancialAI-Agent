@@ -73,6 +73,10 @@ class WebState:
         self._locks: dict[str, asyncio.Lock] = {}
         #: 正在进行的对话数。改配置时要原地重建图，此时不能有对话在跑。
         self.active_streams = 0
+        #: 后台执行与断流重连。断开投递不等于停止执行。
+        from finagent.web.streams import StreamHub
+
+        self.hub = StreamHub()
         self._reload_lock = asyncio.Lock()
 
     async def start(self) -> None:
@@ -400,14 +404,88 @@ async def api_chat(request: Request) -> Response:
 
     web.threads.append(thread_id, {"role": "user", "text": message})
 
+    import time as _time
+
+    run_id = f"run_{int(_time.time() * 1000)}_{thread_id[-6:]}"
+
+    async def producer(run: object) -> None:
+        # 执行与投递解耦：客户端断开只影响下面的订阅，不影响这里继续跑。
+        async for chunk in _stream_turn(web, thread_id, user_id, message):
+            web.hub.emit(run, "sse", {"raw": chunk.decode("utf-8", "replace")})  # type: ignore[arg-type]
+
+    web.hub.start(run_id, producer)
+
     return StreamingResponse(
-        _stream_turn(web, thread_id, user_id, message),
+        _tail_run(web, run_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",  # 关掉代理缓冲，否则流式会被攒着
             "Connection": "keep-alive",
+            # 客户端可用它断线重连：GET /api/stream/{run_id}?after=<seq>
+            "X-Run-Id": run_id,
         },
+    )
+
+
+async def _tail_run(web: WebState, run_id: str, after: int = 0):
+    """订阅后台执行的事件。
+
+    客户端断开时这个生成器会被取消，但 ``producer`` 是独立的 asyncio 任务，
+    会继续跑完——这正是「切走就白跑」的修复点。
+    """
+
+    from finagent.web.streams import StreamHub
+
+    hub: StreamHub = web.hub
+    try:
+        async for item in hub.subscribe(run_id, after=after):
+            if item["event"] == "sse":
+                yield item["data"]["raw"].encode("utf-8")
+            elif item["event"] == "ping":
+                yield b": ping\n\n"
+    except Exception as exc:  # noqa: BLE001 - 投递失败不代表执行失败
+        log.warning("SSE 投递中断（%s），后台执行继续", exc)
+
+
+async def api_cancel_run(request: Request) -> Response:
+    """显式取消一次后台执行。
+
+    断开投递**不等于**取消执行——想真停就用这个（或 Steering 的 cancel 指令）。
+    """
+
+    web = state_of(request)
+    run_id = (request.path_params or {}).get("run_id") or ""
+    stopped = web.hub.cancel(run_id)
+    return JSONResponse({"ok": stopped, "run_id": run_id, "status": web.hub.status(run_id)})
+
+
+async def api_run_status(request: Request) -> Response:
+    """查询后台执行进度（不订阅、不重连）。"""
+
+    web = state_of(request)
+    run_id = (request.path_params or {}).get("run_id") or ""
+    return JSONResponse(web.hub.status(run_id))
+
+
+async def api_stream(request: Request) -> Response:
+    """断线重连：从 ``after`` 续播，不重跑任务。"""
+
+    web = state_of(request)
+    run_id = (request.path_params or {}).get("run_id") or ""
+    try:
+        after = int(request.query_params.get("after") or 0)
+    except ValueError:
+        after = 0
+
+    status = web.hub.status(run_id)
+    if not status.get("exists"):
+        return JSONResponse({"ok": False, "error": f"未知 run {run_id}"}, status_code=404)
+
+    return StreamingResponse(
+        _tail_run(web, run_id, after=after),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -652,6 +730,9 @@ def build_app(settings: Settings | None = None, *, transport: str | None = None)
         Route("/", index),
         Route("/api/info", api_info),
         Route("/api/steer", api_steer, methods=["POST"]),
+        Route("/api/stream/{run_id}", api_stream),
+        Route("/api/runs/{run_id}", api_run_status),
+        Route("/api/runs/{run_id}/cancel", api_cancel_run, methods=["POST"]),
         Route("/api/trace/{task_id}", api_trace),
         Route("/api/llm", api_llm, methods=["GET", "POST"]),
         Route("/api/threads", api_threads, methods=["GET", "POST"]),
