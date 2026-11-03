@@ -224,6 +224,11 @@ async def run_expert(
     passes: list[str] | None = None,
     #: 本轮截止时刻（monotonic）。传给工具循环，避免单个节点把整轮拖过预算。
     deadline: float | None = None,
+    #: token 预算与上下文预算，一并传给工具循环。
+    token_budget: int | None = None,
+    context_budget: int = 24_000,
+    #: 压缩发生时回调（把「压掉了什么」记进事件表，恢复时才说得清）。
+    on_compact: Any = None,
 ) -> ExpertOutcome:
     """执行一个专家，把两种模式统一成 :class:`ExpertOutcome`。
 
@@ -260,6 +265,9 @@ async def run_expert(
         prior_artifacts=prior_artifacts,
         critique=critique,
         deadline=deadline,
+        token_budget=token_budget,
+        context_budget=context_budget,
+        on_compact=on_compact,
     )
 
 
@@ -404,6 +412,9 @@ async def _run_llm(
     prior_artifacts: dict[str, Any] | None,
     critique: dict[str, Any] | None,
     deadline: float | None = None,
+    token_budget: int | None = None,
+    context_budget: int = 24_000,
+    on_compact: Any = None,
 ) -> ExpertOutcome:
     sections: list[str] = []
     artifacts: dict[str, Any] = {}
@@ -438,6 +449,9 @@ async def _run_llm(
             agent=agent,
             stage=name,
             deadline=deadline,
+            token_budget=token_budget,
+            context_budget=context_budget,
+            on_compact=on_compact,
             model=model,
             tools=tools,
             system_prompt=prompt,

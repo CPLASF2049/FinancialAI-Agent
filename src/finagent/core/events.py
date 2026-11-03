@@ -102,7 +102,13 @@ class EventStore:
             stamp = time.time()
             conn.execute(
                 "INSERT INTO events (task_id, seq, ts, type, payload) VALUES (?, ?, ?, ?, ?)",
-                (task_id, seq, stamp, event_type, json.dumps(payload, ensure_ascii=False, default=str)),
+                (
+                    task_id,
+                    seq,
+                    stamp,
+                    event_type,
+                    json.dumps(payload, ensure_ascii=False, default=str),
+                ),
             )
         return Event(task_id=task_id, seq=seq, ts=stamp, type=event_type, payload=payload)
 
@@ -204,7 +210,7 @@ class TurnRecorder:
         if self.store is None:
             return
         # task_id 由 recorder 自己带着，调用方重复传会撞参数
-        payload.pop('task_id', None)
+        payload.pop("task_id", None)
         try:
             self.store.append(self.task_id, event_type, **payload)
         except Exception as exc:  # noqa: BLE001 - 审计失败不影响回答

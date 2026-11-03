@@ -294,6 +294,34 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
                 step_id=f"{agent}-{int(step_started * 1000)}",
                 is_revision=is_revision,
             )
+            # Steering：在 step 边界消费用户中途下的指令（不打断正在跑的工具）
+            steer = _drain_steering(state)
+            if steer["cancel"]:
+                log.info("收到取消指令，结束本轮")
+                return Command(
+                    goto="save_memory",
+                    update={
+                        **_bump(state),
+                        "stop_reason": "cancelled",
+                        "route_reason": "用户取消了本轮执行",
+                        "next_agent": "finish",
+                        "decision_log": [
+                            {
+                                "step": "steer",
+                                "label": "用户取消",
+                                "detail": "收到 cancel 指令，已停止派发新工作",
+                            }
+                        ],
+                    },
+                )
+            if steer["instructions"]:
+                extra = "\n".join(steer["instructions"])
+                question = f"{question}\n\n（执行中收到的新要求，请遵守）\n{extra}"
+                recorder(str(state.get("task_id") or "")).record(
+                    "steer:applied", instructions=steer["instructions"], focus=steer["focus"]
+                )
+
+            passes = _passes_for(agent, question)
             outcome = await run_expert(
                 agent,
                 question,
@@ -302,6 +330,12 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
                 profile_summary=state.get("profile_summary") or "",
                 prior_artifacts=state.get("artifacts") or {},
                 critique=critique if is_revision else None,
+                passes=passes,
+                # 三重预算 + 压缩回调：都随调用下传，别只停在 supervisor 那一层
+                deadline=_deadline(state, settings),
+                token_budget=settings.turn_token_budget,
+                context_budget=settings.context_budget_tokens,
+                on_compact=_compact_sink(state, recorder),
             )
 
             log.info(
@@ -866,6 +900,36 @@ def _turn_exceeded(state: FinState, settings: Settings) -> str | None:
     # critic 里已经用 total_left 挡住了，这里再拦会把 max_total_revisions=0 变成
     # 「一步都不许走」，那显然不是用户的意图。
     return None
+
+
+def _drain_steering(state: FinState) -> dict[str, Any]:
+    """取出本轮的 Steering 指令。没有 task_id 就当没指令。"""
+
+    from finagent.core.steering import QUEUE, apply
+
+    task_id = str(state.get("task_id") or "")
+    if not task_id:
+        return {"cancel": False, "instructions": [], "focus": ""}
+    return apply(QUEUE.drain(task_id))
+
+
+def _passes_for(agent: str, question: str) -> list[str]:
+    """这一轮要跑哪些子职责。与 experts 内部的默认逻辑保持一致。"""
+
+    from finagent.graph.experts import _default_passes
+
+    return list(_default_passes(agent, question))
+
+
+def _compact_sink(state: FinState, recorder: Any):
+    """把压缩事件写进事件表：恢复时要靠它知道上下文被压过、压到了多少。"""
+
+    task_id = str(state.get("task_id") or "")
+
+    def sink(info: dict[str, Any]) -> None:
+        recorder(task_id).record("context:compacted", **info)
+
+    return sink
 
 
 def _deadline(state: FinState, settings: Settings) -> float | None:

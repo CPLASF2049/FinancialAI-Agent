@@ -72,7 +72,9 @@ def test_failed_tools(store: EventStore) -> None:
 
 
 def test_revisions_link_to_next_step(store: EventStore) -> None:
-    store.append("t1", "review:verdict", agent="researcher", verdict="revise", issues=[{"detail": "x"}])
+    store.append(
+        "t1", "review:verdict", agent="researcher", verdict="revise", issues=[{"detail": "x"}]
+    )
     store.append("t1", "step:start", agent="researcher")
     store.append("t1", "review:verdict", agent="researcher", verdict="pass")
     revisions = store.revisions("t1")

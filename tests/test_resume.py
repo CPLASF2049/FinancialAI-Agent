@@ -59,9 +59,7 @@ def test_turn_end_means_done() -> None:
 
 
 def test_resume_hint_mentions_idempotency() -> None:
-    hint = resume_hint(
-        [_ev("turn:start"), _ev("tool:call", tool="add_position", call_id="c9")]
-    )
+    hint = resume_hint([_ev("turn:start"), _ev("tool:call", tool="add_position", call_id="c9")])
     assert hint["phase"] == "tool"
     assert "c9" in hint["pending_calls"]
     assert "call_id" in hint["action"]

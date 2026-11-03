@@ -338,8 +338,7 @@ def check_adjustment_continuity(
                 RuleCode.ADJUSTMENT_DISCONTINUITY,
                 f"复权口径不一致：重叠区间价格比例最大偏离 {drift:.2%}",
                 detail=(
-                    "同一段历史两次取到的价格不成比例，供应商可能换了复权方式；"
-                    "回测结果会因此失真。"
+                    "同一段历史两次取到的价格不成比例，供应商可能换了复权方式；回测结果会因此失真。"
                 ),
             )
         )

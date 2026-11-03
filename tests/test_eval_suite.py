@@ -69,7 +69,9 @@ def _record(**overrides) -> dict:
 
 
 def test_summary_metrics() -> None:
-    summary = eval_suite.summarise([_record(), _record(faithfulness={"supported": 1, "total": 4, "ratio": 0.25})])
+    summary = eval_suite.summarise(
+        [_record(), _record(faithfulness={"supported": 1, "total": 4, "ratio": 0.25})]
+    )
     assert summary["tasks"] == 2
     assert summary["tool_accuracy"] == 1.0
     assert summary["faithfulness_mean"] == pytest.approx(0.625)

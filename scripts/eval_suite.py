@@ -106,7 +106,8 @@ async def run_task(app: Any, task: dict[str, Any]) -> dict[str, Any]:
         "risk_hits": risk_hits,
         "risk_expected": task.get("risk_expected", "none"),
         "faithfulness": _faithfulness(answer, evidence),
-        "tokens": _tokens_from_events(app, f"eval:{thread_id}") or _tokens_from_events(app, thread_id),
+        "tokens": _tokens_from_events(app, f"eval:{thread_id}")
+        or _tokens_from_events(app, thread_id),
         "wall_ms": wall_ms,
         "stop_reason": result.stop_reason,
         "answer_chars": len(answer),
@@ -127,14 +128,18 @@ def summarise(records: list[dict[str, Any]]) -> dict[str, Any]:
 
     risk_records = [item for item in records if item["risk_expected"] == "any"]
     normal_records = [item for item in records if item["risk_expected"] == "none"]
-    faith_ratios = [item["faithfulness"]["ratio"] for item in records if item["faithfulness"]["total"]]
+    faith_ratios = [
+        item["faithfulness"]["ratio"] for item in records if item["faithfulness"]["total"]
+    ]
 
     return {
         "tasks": len(records),
         "answered_rate": round(sum(1 for r in records if r["answered"]) / len(records), 3),
         "tool_accuracy": round(sum(1 for r in records if r["tool_accuracy"]) / len(records), 3),
         "faithfulness_mean": round(statistics.fmean(faith_ratios), 3) if faith_ratios else None,
-        "hallucination_rate": round(1 - statistics.fmean(faith_ratios), 3) if faith_ratios else None,
+        "hallucination_rate": round(1 - statistics.fmean(faith_ratios), 3)
+        if faith_ratios
+        else None,
         "avg_tool_calls": round(statistics.fmean([r["tool_calls"] for r in records]), 2),
         "avg_revisions": round(statistics.fmean([r["revisions"] for r in records]), 2),
         "risk_hit_rate": (
@@ -179,7 +184,9 @@ async def main_async(args: argparse.Namespace) -> int:
     }
 
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
-    (EVAL_DIR / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    (EVAL_DIR / "report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     if args.save:
         (EVAL_DIR / f"{args.save}.json").write_text(

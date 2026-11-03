@@ -57,17 +57,52 @@ def test_shift_minus_one_style_leak_is_detected_by_cut_rule() -> None:
 # ----------------------------------------------------------------------
 def test_limit_up_blocks_buy() -> None:
     engine = BacktestEngine(provider=None)  # type: ignore[arg-type]
-    # 涨停：收盘较昨收 +10%
-    assert engine._bar_tradable({"close": 11.0, "pre_close": 10.0}, "600519.SH", "BUY") is False
+    # 尾盘涨停（盘中打开过）：收盘 +10%，但 high/low 不同 -> 不是一字板
+    bar = {"close": 11.0, "pre_close": 10.0, "open": 10.5, "high": 11.0, "low": 10.4}
+    assert engine._bar_tradable(bar, "600519.SH", "BUY") is False
     assert engine.skipped.get("limit_up") == 1
-    # 涨停时卖出不受限（能卖掉）
-    assert engine._bar_tradable({"close": 11.0, "pre_close": 10.0}, "600519.SH", "SELL") is True
+    # 涨停时卖出不受限（买盘排队，卖得掉）
+    assert engine._bar_tradable(bar, "600519.SH", "SELL") is True
 
 
 def test_limit_down_blocks_sell() -> None:
     engine = BacktestEngine(provider=None)  # type: ignore[arg-type]
-    assert engine._bar_tradable({"close": 9.0, "pre_close": 10.0}, "600519.SH", "SELL") is False
+    bar = {"close": 9.0, "pre_close": 10.0, "open": 9.5, "high": 9.6, "low": 9.0}
+    assert engine._bar_tradable(bar, "600519.SH", "SELL") is False
     assert engine.skipped.get("limit_down") == 1
+
+
+def test_sealed_limit_up_is_tracked_separately() -> None:
+    """一字板：开=高=低=收。买不进，但统计上要单独记——它最能暴露回测虚高。"""
+
+    engine = BacktestEngine(provider=None)  # type: ignore[arg-type]
+    bar = {"close": 11.0, "pre_close": 10.0, "open": 11.0, "high": 11.0, "low": 11.0}
+    assert engine._bar_tradable(bar, "600519.SH", "BUY") is False
+    assert engine.skipped.get("limit_up_sealed") == 1
+    assert engine.skipped.get("limit_up") is None
+
+
+def test_sealed_limit_down_blocks_sell() -> None:
+    engine = BacktestEngine(provider=None)  # type: ignore[arg-type]
+    bar = {"close": 9.0, "pre_close": 10.0, "open": 9.0, "high": 9.0, "low": 9.0}
+    assert engine._bar_tradable(bar, "600519.SH", "SELL") is False
+    assert engine.skipped.get("limit_down_sealed") == 1
+
+
+# ----------------------------------------------------------------------
+# 冲击成本：订单越大越贵
+# ----------------------------------------------------------------------
+def test_impact_cost_grows_with_participation() -> None:
+    engine = BacktestEngine(provider=None)  # type: ignore[arg-type]
+    tiny = engine._impact_cost(1_000, 1_000_000_000)
+    large = engine._impact_cost(200_000_000, 1_000_000_000)
+    assert large > tiny
+    assert large <= 0.01, "单边滑点要有上限，否则回测没有意义"
+
+
+def test_impact_cost_without_volume_falls_back_to_base() -> None:
+    engine = BacktestEngine(provider=None)  # type: ignore[arg-type]
+    assert engine._impact_cost(10_000, 0) == engine.slippage
 
 
 def test_growth_board_has_wider_limit() -> None:

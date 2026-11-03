@@ -173,6 +173,14 @@ class BacktestEngine:
 
         涨停买不进、跌停卖不出——这是 A 股回测里最常见的「虚假收益」来源：
         信号恰好在涨停板上，按收盘价买入在现实中根本成交不了。
+
+        两种涨停要分开记，但**方向限制一样**：
+
+        * 涨停（含一字板）：买不进，卖得掉——涨停时买盘排队，卖出没问题
+        * 跌停（含一字板）：卖不出，买得到
+
+        一字板单独记一笔统计，是因为它最能暴露回测虚高：全市场封死的时候你
+        还「买到了」，说明成交假设根本不成立。
         """
 
         if not self.enforce_price_limits:
@@ -185,14 +193,33 @@ class BacktestEngine:
 
         change = close / pre_close - 1.0
         limit = self.limit_pct(ts_code)
+        high = float(row.get("high") or close)
+        low = float(row.get("low") or close)
+        open_ = float(row.get("open") or close)
+        sealed = high == low and open_ == high  # 一字板：全天一个价
+
         # 留 0.2 个百分点容差：不同数据源的四舍五入会让 10.00% 变成 9.98%
         if change >= limit - 0.002:
-            self._skip("limit_up")
+            self._skip("limit_up_sealed" if sealed else "limit_up")
             return action != "BUY"
         if change <= -limit + 0.002:
-            self._skip("limit_down")
+            self._skip("limit_down_sealed" if sealed else "limit_down")
             return action != "SELL"
         return True
+
+    def _impact_cost(self, order_value: float, bar_amount: float) -> float:
+        """冲击成本：订单占当日成交额越大，滑点越高。
+
+        固定滑点在高价股上低估、在小票上高估。平方根模型（Almgren 简化版）
+        至少能反映「买得越多越贵」这个事实。
+        """
+
+        if bar_amount <= 0 or order_value <= 0:
+            return self.slippage
+        participation = min(order_value / bar_amount, 1.0)
+        impact = self.slippage * (participation**0.5) * 2.0
+        # 单边滑点上限 1%：再高就说明这个仓位本身不可执行
+        return min(self.slippage + impact, 0.01)
 
     # ------------------------------------------------------------------
     def _load_frame(
@@ -293,8 +320,10 @@ class BacktestEngine:
                 if signal == 1 and position == 0 and cash > 0:
                     fraction = float(instance.position_fraction(effective_params, context))
                     fraction = max(0.0, min(1.0, fraction))
-                    # 成交价带滑点：买单往上吃
-                    fill_price = price * (1.0 + self.slippage)
+                    # 成交价带冲击成本：订单占当日成交额越大越贵
+                    order_value = cash * fraction
+                    slip = self._impact_cost(order_value, float(series.get("amount") or 0))
+                    fill_price = price * (1.0 + slip)
                     affordable = (
                         int(cash / (fill_price * (1.0 + self.commission)) / LOT_SIZE) * LOT_SIZE
                     )
@@ -316,8 +345,10 @@ class BacktestEngine:
                             )
                         )
                 elif signal == -1 and position > 0:
-                    # 卖单往下让价
-                    fill_price = price * (1.0 - self.slippage)
+                    # 卖单往下让价，同样按冲击成本
+                    position_value = position * price
+                    slip = self._impact_cost(position_value, float(series.get("amount") or 0))
+                    fill_price = price * (1.0 - slip)
                     revenue = position * fill_price
                     fee = revenue * (self.commission + self.stamp_duty)
                     cash += revenue - fee
@@ -380,7 +411,8 @@ class BacktestEngine:
             )
         if self.skipped:
             result.warnings.append(
-                "有成交被拒绝：" + "、".join(f"{key}={value}" for key, value in self.skipped.items())
+                "有成交被拒绝："
+                + "、".join(f"{key}={value}" for key, value in self.skipped.items())
             )
         return result
 

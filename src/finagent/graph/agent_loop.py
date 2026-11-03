@@ -175,6 +175,8 @@ async def run_tool_loop(
     is_cancelled: Any = None,
     #: 上下文预算（token）。超过就先压缩中间工具结果，再发起模型请求。
     context_budget: int = 24_000,
+    #: 压缩发生时的回调。把「压掉了什么」记进事件表，恢复时才有上下文可依。
+    on_compact: Any = None,
 ) -> LoopResult:
     """跑到模型不再调用工具为止，并逐次记录每次调用。"""
 
@@ -213,9 +215,21 @@ async def run_tool_loop(
 
         result.iterations = iteration
         # 进模型之前先压一压：等上下文溢出再处理就晚了
-        from finagent.graph.compaction import compact
+        from finagent.graph.compaction import compact, context_tokens
 
-        messages = compact(messages, budget=context_budget)
+        before = context_tokens(messages)
+        compacted = compact(messages, budget=context_budget)
+        if compacted is not messages:
+            after = context_tokens(compacted)
+            log.info("上下文压缩：%d -> %d tokens", before, after)
+            if on_compact is not None:
+                try:
+                    on_compact(
+                        {"before_tokens": before, "after_tokens": after, "messages": len(messages)}
+                    )
+                except Exception:  # noqa: BLE001 - 观测失败不影响执行
+                    pass
+            messages = compacted
         response = await _call_model(bound, messages, agent=agent, emit=emit)
         messages.append(response)
 

@@ -117,6 +117,18 @@ class Settings(BaseSettings):
         validation_alias="FINAGENT_MAX_AGENT_HOPS",
         description="Upper bound on supervisor -> expert hand-offs per user turn.",
     )
+    #: 单次模型调用的上下文预算（token）。超过先压缩中间工具结果，再发请求。
+    context_budget_tokens: int = Field(
+        default=24_000,
+        validation_alias="FINAGENT_CONTEXT_BUDGET_TOKENS",
+        description="单次模型调用的上下文预算。",
+    )
+    #: 一轮对话的 token 预算。超过即停止继续调工具（结果标记为 partial）。
+    turn_token_budget: int = Field(
+        default=60_000,
+        validation_alias="FINAGENT_TURN_TOKEN_BUDGET",
+        description="单个回合的 token 预算。",
+    )
     #: 东方财富妙想 Skills 的 API Key（环境变量 MX_APIKEY）。
     mx_api_key: str = Field(
         default="",

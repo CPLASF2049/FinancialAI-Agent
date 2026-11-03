@@ -51,7 +51,9 @@ def detect_phase(events: list[Any]) -> Phase:
         return Phase("inbox", _PHASES["inbox"], [])
 
     def kind(item: Any) -> str:
-        return str(getattr(item, "type", None) or (item.get("type") if isinstance(item, dict) else ""))
+        return str(
+            getattr(item, "type", None) or (item.get("type") if isinstance(item, dict) else "")
+        )
 
     types = [kind(item) for item in events]
 
@@ -65,7 +67,11 @@ def detect_phase(events: list[Any]) -> Phase:
     for index, item in enumerate(events):
         if kind(item) != "tool:call":
             continue
-        payload = getattr(item, "payload", None) or (item.get("payload") if isinstance(item, dict) else {}) or {}
+        payload = (
+            getattr(item, "payload", None)
+            or (item.get("payload") if isinstance(item, dict) else {})
+            or {}
+        )
         call_id = str(payload.get("call_id") or "")
         later = [
             getattr(other, "payload", None)

@@ -150,6 +150,35 @@ async def index(request: Request) -> Response:
     )
 
 
+async def api_steer(request: Request) -> Response:
+    """往正在跑的 turn 里塞一条指令。
+
+    指令在**下一个 step 边界**生效，不会打断正在执行的工具——
+    这样不会留下半个副作用。
+    """
+
+    from finagent.core.steering import QUEUE
+
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": "请求体不是合法 JSON"}, status_code=400)
+
+    task_id = str(payload.get("task_id") or "")
+    directive = str(payload.get("directive") or "")
+    if not task_id or not directive:
+        return JSONResponse({"ok": False, "error": "需要 task_id 与 directive"}, status_code=400)
+
+    try:
+        item = QUEUE.push(
+            task_id, directive, text=payload.get("text", ""), target=payload.get("target", "")
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    return JSONResponse({"ok": True, "queued": item.to_dict()})
+
+
 async def api_trace(request: Request) -> Response:
     """按 task_id 还原一次执行链路。
 
@@ -622,6 +651,7 @@ def build_app(settings: Settings | None = None, *, transport: str | None = None)
     routes = [
         Route("/", index),
         Route("/api/info", api_info),
+        Route("/api/steer", api_steer, methods=["POST"]),
         Route("/api/trace/{task_id}", api_trace),
         Route("/api/llm", api_llm, methods=["GET", "POST"]),
         Route("/api/threads", api_threads, methods=["GET", "POST"]),
