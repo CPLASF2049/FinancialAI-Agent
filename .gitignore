@@ -27,3 +27,9 @@ _pytest/
 Thumbs.db
 .idea/
 .vscode/
+
+# 前端构建
+webui/node_modules/
+webui/dist/
+# 构建产物随源码提交（部署时不装 Node），但中间文件不提交
+webui/.vite/

@@ -85,6 +85,12 @@ class AgentRuntime:
             ToolRegistry(tools=dict(self.by_name)),
             ExecutionPolicy(max_consecutive_failures=self.budget.max_retries + 3),
         )
+        # 敏感工具执行前要过审批（Web 层注入；CLI 为空则直通）
+        from finagent.runtime.tool_executor import GLOBAL_APPROVE
+
+        if GLOBAL_APPROVE[0] is not None:
+            self.executor.approve = GLOBAL_APPROVE[0]
+
         self.context_budget = context_budget
         self.max_iterations = max_iterations
         self.deadline = deadline

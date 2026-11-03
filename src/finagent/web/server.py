@@ -62,6 +62,37 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 # ----------------------------------------------------------------------
+def _ui_dir() -> str:
+    """Vue/React 构建产物目录；不存在时返回一个空目录避免启动失败。"""
+
+    directory = Path(__file__).resolve().parent / "static" / "ui"
+    if not directory.exists():
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "index.html").write_text(
+            "<!doctype html><meta charset='utf-8'>"
+            "<body style='background:#141413;color:#faf9f5;font-family:sans-serif;padding:24px'>"
+            "<p>新版工作台尚未构建。执行：</p>"
+            "<pre>cd webui &amp;&amp; npm install &amp;&amp; npm run build</pre>"
+            "<p><a style='color:#d97757' href='/classic'>先使用经典界面</a></p>",
+            encoding="utf-8",
+        )
+    return str(directory)
+
+
+async def redirect_to_ui(request: Request) -> Response:
+    """首页 -> 新版工作台。经典界面保留在 /classic，便于对照。"""
+
+    from starlette.responses import RedirectResponse
+
+    return RedirectResponse(url="/ui/")
+
+
+def _is_page(request: Request) -> bool:
+    """给 NoCacheStaticMiddleware 用：只有页面请求需要 no-cache。"""
+
+    return request.url.path in ("/", "/ui", "/ui/") or request.url.path.startswith("/ui/")
+
+
 class WebState:
     """整个进程共享的运行时对象。"""
 
@@ -415,9 +446,23 @@ async def api_chat(request: Request) -> Response:
     run_id = f"run_{int(_time.time() * 1000)}_{thread_id[-6:]}"
 
     async def producer(run: object) -> None:
-        # 执行与投递解耦：客户端断开只影响下面的订阅，不影响这里继续跑。
-        async for chunk in _stream_turn(web, thread_id, user_id, message):
-            web.hub.emit(run, "sse", {"raw": chunk.decode("utf-8", "replace")})  # type: ignore[arg-type]
+        # 绑定审批通道：敏感工具执行前会在这里挂起，等前端点「允许」
+        from finagent.runtime.tool_executor import GLOBAL_APPROVE
+        from finagent.web.approval import BROKER
+
+        BROKER.attach(lambda payload: web.hub.emit(run, "sse", {"raw": _sse(payload["event"], payload)}))  # type: ignore[arg-type]
+
+        async def approve(call_id: str, tool: str, args: dict) -> bool:
+            if not BROKER.needs(tool, enabled=True):
+                return True
+            return await BROKER.request(call_id, tool, args)
+
+        GLOBAL_APPROVE[0] = approve
+        try:
+            async for chunk in _stream_turn(web, thread_id, user_id, message):
+                web.hub.emit(run, "sse", {"raw": chunk.decode("utf-8", "replace")})  # type: ignore[arg-type]
+        finally:
+            GLOBAL_APPROVE[0] = None
 
     web.hub.start(run_id, producer)
 
@@ -452,6 +497,24 @@ async def _tail_run(web: WebState, run_id: str, after: int = 0):
                 yield b": ping\n\n"
     except Exception as exc:  # noqa: BLE001 - 投递失败不代表执行失败
         log.warning("SSE 投递中断（%s），后台执行继续", exc)
+
+
+async def api_approve(request: Request) -> Response:
+    """对一次待审批的工具调用做出决定（允许 / 拒绝）。"""
+
+    from finagent.web.approval import BROKER
+
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"ok": False, "error": "请求体不是合法 JSON"}, status_code=400)
+
+    call_id = str(payload.get("call_id") or "")
+    allowed = bool(payload.get("allowed"))
+    if not call_id:
+        return JSONResponse({"ok": False, "error": "需要 call_id"}, status_code=400)
+
+    return JSONResponse({"ok": BROKER.resolve(call_id, allowed), "call_id": call_id})
 
 
 async def api_cancel_run(request: Request) -> Response:
@@ -733,12 +796,16 @@ def build_app(settings: Settings | None = None, *, transport: str | None = None)
             await web.stop()
 
     routes = [
-        Route("/", index),
+        # 新版工作台（Vite 构建产物）是默认入口；经典界面保留在 /classic 便于对照
+        Mount("/ui", app=StaticFiles(directory=_ui_dir(), html=True), name="ui"),
+        Route("/", redirect_to_ui),
+        Route("/classic", index),
         Route("/api/info", api_info),
         Route("/api/steer", api_steer, methods=["POST"]),
         Route("/api/stream/{run_id}", api_stream),
         Route("/api/runs/{run_id}", api_run_status),
         Route("/api/runs/{run_id}/cancel", api_cancel_run, methods=["POST"]),
+        Route("/api/approve", api_approve, methods=["POST"]),
         Route("/api/trace/{task_id}", api_trace),
         Route("/api/llm", api_llm, methods=["GET", "POST"]),
         Route("/api/threads", api_threads, methods=["GET", "POST"]),

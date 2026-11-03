@@ -53,6 +53,11 @@ class ToolRegistry:
         return len(self.tools)
 
 
+#: 由 Web 层注入的审批钩子。CLI 不注入 -> 敏感操作直接执行（本地单用户）。
+#: 用 list 包一层是为了能在运行期替换而不必改签名。
+GLOBAL_APPROVE: list = [None]
+
+
 class ToolExecutor:
     """带超时与统一状态判定地执行一个工具。"""
 
@@ -60,6 +65,8 @@ class ToolExecutor:
         self.registry = registry
         self.policy = policy or ExecutionPolicy()
         self.stats = ToolStats()
+        #: 审批钩子：`async (call_id, tool, args) -> bool`。None 表示直通。
+        self.approve: Any = None
 
     async def execute(
         self, name: str, arguments: dict[str, Any], *, call_id: str = ""
@@ -81,6 +88,21 @@ class ToolExecutor:
             )
             self._record(result)
             return result
+
+        # 敏感操作先过审批。拒绝就不执行——不是「执行后提示」。
+        if self.approve is not None:
+            allowed = await self.approve(call_id, name, arguments)
+            if not allowed:
+                result = ToolResult(
+                    tool=name,
+                    status=ToolStatus.CANCELLED,
+                    error_code="APPROVAL_DENIED",
+                    error_message=f"用户拒绝了 {name} 的执行",
+                    call_id=call_id,
+                    execution_time_ms=elapsed(),
+                )
+                self._record(result)
+                return result
 
         try:
             payload = await asyncio.wait_for(
