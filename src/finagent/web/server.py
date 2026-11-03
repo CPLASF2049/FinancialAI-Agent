@@ -350,7 +350,13 @@ async def api_thread(request: Request) -> Response:
 
     try:
         if request.method == "DELETE":
-            removed = web.threads.delete(thread_id)
+            # ?if_empty=1：只有「没有任何消息」时才删。
+            # 这是「点了新建对话但没说话就切走」的清理路径——有内容的一律不动。
+            only_empty = str(request.query_params.get("if_empty") or "") in ("1", "true", "yes")
+            if only_empty:
+                removed = web.threads.delete_if_empty(thread_id)
+            else:
+                removed = web.threads.delete(thread_id)
             return JSONResponse({"deleted": removed}, status_code=200 if removed else 404)
 
         record = web.threads.get(thread_id)

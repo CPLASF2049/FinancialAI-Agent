@@ -130,6 +130,21 @@ class ThreadStore:
 
         self._mutate(mutate)
 
+    def delete_if_empty(self, thread_id: str) -> bool:
+        """删除一个**没有消息**的会话。
+
+        用于「点了新建对话但没说话就切走」：空会话留着只是噪音，
+        删掉才算干净。有内容的一律不动。
+        """
+
+        data = self._read()
+        record = data["threads"].get(thread_id)
+        if record is None:
+            return False
+        if record.get("messages"):
+            return False
+        return self.delete(thread_id)
+
     def rename(self, thread_id: str, title: str) -> bool:
         cleaned = str(title).strip()
         if not cleaned:
@@ -148,9 +163,31 @@ class ThreadStore:
 
 
 # ----------------------------------------------------------------------
+#: 开头的寒暄/请求前缀。用户不会把这些当标题，去掉之后信息密度更高。
+_TITLE_PREFIXES = (
+    "帮我", "请帮我", "麻烦", "请", "能不能", "可以", "我想", "我要",
+    "你好，", "你好", "嗨，", "嗨",
+)
+#: 标题里不该出现的尾部标点。
+_TITLE_TAIL = "。！？.!?，,、;；:："
+
+
 def _title_of(text: str) -> str:
-    clean = " ".join(text.split())
-    return clean[:24] + ("…" if len(clean) > 24 else "") if clean else "新对话"
+    """从第一条用户消息里提炼标题。
+
+    规则：压平空白 -> 去掉寒暄/请求前缀 -> 去掉尾部标点 -> 截断 24 字。
+    简简单单的规则就够用，比再叫一次模型稳得多（也不会多花钱）。
+    """
+
+    clean = " ".join(str(text or "").split())
+    for prefix in _TITLE_PREFIXES:
+        if clean.startswith(prefix):
+            clean = clean[len(prefix) :].lstrip("，,。. ")
+            break
+    clean = clean.rstrip(_TITLE_TAIL).strip()
+    if not clean:
+        return "新对话"
+    return clean[:24] + ("…" if len(clean) > 24 else "")
 
 
 def _preview(messages: list[dict[str, Any]]) -> str:

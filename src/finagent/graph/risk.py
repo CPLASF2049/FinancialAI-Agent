@@ -178,6 +178,21 @@ SOURCE_LABELS = {
 }
 
 
+#: 这些开头说明是「对话」而不是「数据分析」，不该补数据来源。
+_CONVERSATIONAL_PREFIXES = (
+    "抱歉",
+    "已更新你的投资偏好",
+    "已为你",
+    "收到",
+    "好的",
+)
+
+
+def _is_conversational(text: str) -> bool:
+    head = (text or "").lstrip()[:20]
+    return any(head.startswith(prefix) for prefix in _CONVERSATIONAL_PREFIXES)
+
+
 def check_source_annotation(
     text: str, *, provider: str, as_of: str | None = None
 ) -> tuple[str, list[dict[str, str]], list[str]]:
@@ -189,7 +204,12 @@ def check_source_annotation(
     flags: list[dict[str, str]] = []
     actions: list[str] = []
 
-    if has_numbers and not marked:
+    # 道歉、致谢、偏好确认这类**没有人话数据**的回复不需要来源脚注。
+    # 之前给「抱歉，我没有理解…」后面补了「数据来源：东方财富行情」，
+    # 因为模板里恰好有「10.5 元」「2000 元」这些示例数字，看起来莫名其妙。
+    conversational = _is_conversational(text)
+
+    if has_numbers and not marked and not conversational:
         date = as_of or cal.format_date(cal.latest_trading_day())
         source = SOURCE_LABELS.get(provider, provider)
         text += (

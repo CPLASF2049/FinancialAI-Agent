@@ -145,22 +145,39 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
 
         user_id = state.get("user_id") or "default"
         profile = _store_profile(store, user_id)
+        question = state.get("question") or ""
 
+        # 偏好陈述要在**这里**捕获，而不是等 save_memory：
+        # supervisor 可能判定「无需派发 Agent」直接收尾，而 save_memory
+        # 判定「画像没变化」就会跳过 MCP 镜像——两头都落空。
+        pending: dict[str, Any] = {}
+        if looks_like_preference(question):
+            hints = extract_profile_hints(question)
+            if not hints.is_empty():
+                pending = hints.to_payload()
+
+        # 本地没有画像时，先问 MCP（与其它客户端共享那份）
         if not profile:
             runner = ToolRunner(toolkit=toolkit, agent="memory", emit_events=False)
             outcome = await runner.call("get_user_profile")
             if outcome.ok and isinstance(outcome.data, dict):
                 profile = outcome.data.get("profile") or {}
-                summary = outcome.data.get("summary") or ""
                 if profile:
                     _store_write_profile(store, user_id, profile)
-                return {
-                    "user_profile": profile or {},
-                    "profile_summary": summary,
-                }
-            return {"user_profile": {}, "profile_summary": ""}
 
-        return {"user_profile": profile, "profile_summary": _profile_summary(profile)}
+        merged = _merge_profile(profile or {}, pending)
+        if pending:
+            _store_write_profile(store, user_id, merged)
+            # 同步到 MCP 画像存储，让「更新偏好」这类工具也能看到。
+            # 放在这里而不是 save_memory，是为了不依赖后续路由。
+            mirror = ToolRunner(toolkit=toolkit, agent="memory", emit_events=False)
+            await mirror.call("update_user_profile", **pending)
+
+        return {
+            "user_profile": merged,
+            "profile_summary": _profile_summary(merged),
+            "profile_updates": pending,
+        }
 
     # ------------------------------------------------------------------
     async def supervisor(state: FinState) -> Any:

@@ -187,13 +187,15 @@ def plan_for(question: str) -> TaskPlan:
             )
         )
 
-    # 一句都没匹配上时，至少要求「有个数据来源」
+    # 一句都没匹配上：这多半是「聊偏好」「问定义」这类不需要行情数据的请求。
+    # 记成**可选**，不能因为「没有工具调用」就判成部分完成——
+    # 那会把一句正常的对话变成「缺少：可核验的数据」。
     if not tasks:
         tasks.append(
             SubTask(
                 "any_evidence",
                 "可核验的数据",
-                Need.REQUIRED,
+                Need.OPTIONAL,
                 tools=("get_realtime_price", "get_daily_price", "mx_financial_data"),
             )
         )
@@ -245,6 +247,10 @@ def assess(plan: TaskPlan, trace: list[dict[str, Any]]) -> Assessment:
 def notice_for(assessment: Assessment) -> str:
     """交付时的补充说明。complete 时不打扰用户。"""
 
+    # 没有任何必做项 = 这轮本来就没承诺给数据（聊偏好、问定义…），一句话都别说。
+    # 否则会冒出「已完成，但未覆盖：可核验的数据」这种废话。
+    if not assessment.plan.required:
+        return ""
     if assessment.overall is Overall.COMPLETE and not assessment.missing_optional:
         return ""
     text = assessment.notice()

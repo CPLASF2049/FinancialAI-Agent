@@ -213,13 +213,22 @@
   }
 
   async function newThread() {
-    // 关键：这里**不**向服务端建会话。
-    // 以前是点一下 POST 一个 thread，于是只要用户连点几次（尤其是界面卡住时反复点），
-    // 服务端就堆一堆空对话，刷新后全冒出来。现在「新对话」只是清空视图，
-    // 真正的会话在第一次发送时创建（见 send()）。
+    // 规则：
+    // 1) 点「新建对话」-> 立刻建一条空会话，这样切走再切回也能看到它
+    // 2) 如果上一条也是空的（没说过话），先删掉它，避免堆一排空对话
+    // 3) 一旦发出第一条消息，这条会话就固定下来，标题由服务端从内容提炼
     if (state.streaming) stopStream();
-    state.threadId = null;
-    localStorage.removeItem("finagent.thread");
+
+    const previous = state.threadId;
+    if (previous && state.threadEmpty) {
+      await fetch(`/api/threads/${previous}?if_empty=1`, { method: "DELETE" });
+    }
+
+    const res = await fetch("/api/threads", { method: "POST" });
+    const created = await res.json();
+    state.threadId = created.id;
+    state.threadEmpty = true;
+    localStorage.setItem("finagent.thread", created.id);
     resetView();
     await loadThreads();
     $("input").focus();
@@ -236,6 +245,10 @@
   }
 
   async function openThread(id) {
+    if (state.threadId && state.threadId !== id && state.threadEmpty) {
+      await fetch(`/api/threads/${state.threadId}?if_empty=1`, { method: "DELETE" });
+      state.threadEmpty = false;
+    }
     state.threadId = id;
     localStorage.setItem("finagent.thread", id);
     try {
@@ -502,6 +515,8 @@
     $("input").value = "";
     autoGrow();
     setStreaming(true);
+    // 说过话就不再是空会话，切走也不会被删
+    state.threadEmpty = false;
 
     appendMessage("user", { text: message });
 

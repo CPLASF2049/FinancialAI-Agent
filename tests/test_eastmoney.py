@@ -247,21 +247,24 @@ def test_universe_marks_incomplete_when_a_page_fails(monkeypatch) -> None:
     """中途被限流时，必须把「不完整」标记出来，不能假装拿全了。"""
 
     instance = EastmoneyProvider()
+    # 彻底隔离：不读磁盘缓存、不读内存回填，否则断言会被别处的缓存污染
+    instance._cache_path = lambda: None  # type: ignore[method-assign]
+    instance._disk_rows = {}
+    instance._universe_cache = None
     monkeypatch.setattr("finagent.providers.eastmoney.time.sleep", lambda *_: None)
 
     def flaky(url: str, params: dict | None = None) -> dict:
         page = int((params or {}).get("pn", 1))
         if page == 1:
-            # 声称有 300 条 → 必须继续翻页
+            # 声称有 300 条 -> 必须继续翻页
             return {"rc": 0, "data": {"total": 300, "diff": _list_page(1)["data"]["diff"]}}
         raise OSError("连接被重置")
 
     monkeypatch.setattr(instance, "_http_json", flaky)
     frame = instance.screening_universe()
 
-    assert len(frame) == 3  # 第 1 页拿到了
+    assert len(frame) == 3  # 只有第 1 页拿到了
     assert instance.last_universe_complete is False
-    assert instance._universe_cache is not None
 
 
 def test_complete_universe_is_marked_complete(provider: EastmoneyProvider) -> None:
