@@ -270,11 +270,68 @@ _PASS_HEADINGS = {
 }
 
 
+#: 每个子职责都会自作主张写一段「风险提示 / 数据来源 / 免责声明」。
+#: 两根一拼就变成两份完整报告，用户看到的就是「杂揉」。这些套话由我们统一加一次。
+_BOILERPLATE_MARKERS = (
+    "风险提示",
+    "免责声明",
+    "不构成投资建议",
+    "数据来源：",
+    "数据口径说明",
+)
+#: 「结论」这类小标题在合并时由 ## 标题承担，不需要各节再写一遍。
+_REDUNDANT_HEADINGS = ("结论", "总结", "回答")
+
+
+def _is_boilerplate_start(line: str) -> bool:
+    """这一行是不是「风险提示」这类收尾套话的开头。
+
+    必须容忍 markdown 写法：`**风险提示**`、`## 风险提示`、`> 风险提示：…`
+    ——模型经常这么写，只比对裸文本会漏掉，于是每节都带一段免责声明。
+    """
+
+    stripped = line.strip().lstrip("#>*- 　").strip()
+    if not stripped:
+        return False
+    # 只把「独立的提示段」当套话，正文里顺带提一句「风险」不算
+    for marker in _BOILERPLATE_MARKERS:
+        if not stripped.startswith(marker):
+            continue
+        # 「风险提示」常常单独成行，但「数据来源：…截至 20261103。」是一整句，
+        # 所以给足长度余量，避免把正文里的正常句子误判成套话
+        if len(stripped) <= len(marker) + 40:
+            return True
+    return False
+
+
+def _strip_boilerplate(body: str) -> str:
+    """去掉子职责自带的收尾套话，只留事实与判断。"""
+
+    kept: list[str] = []
+    for line in body.splitlines():
+        if _is_boilerplate_start(line):
+            break
+        kept.append(line)
+    return "\n".join(kept).strip()
+
+
+def _strip_leading_heading(body: str) -> str:
+    """去掉开头自带的「结论」小节，避免和 ## 标题重复。"""
+
+    text = body.lstrip()
+    for heading in _REDUNDANT_HEADINGS:
+        for prefix in (f"{heading}\n", f"**{heading}**\n", f"## {heading}\n", f"{heading}：\n"):
+            if text.startswith(prefix):
+                return text[len(prefix) :].lstrip()
+    return text
+
+
 def _with_heading(name: str, body: str) -> str:
     """多子职责合并时加一个小标题，读者才知道这一节在讲什么。"""
 
     heading = _PASS_HEADINGS.get(name, name)
-    return f"## {heading}\n\n{body}"
+    cleaned = _strip_leading_heading(_strip_boilerplate(body))
+    return f"## {heading}\n\n{cleaned}"
 
 
 async def _run_llm(
@@ -298,6 +355,11 @@ async def _run_llm(
     for name in passes:
         tools = toolkit.subset(tools_for_pass(name, set(toolkit.by_name)))
         prompt = build_expert_prompt(name, profile_summary)
+        if len(passes) > 1:
+            # 多子职责时会拼成一整份答案，这时才需要「别重复」的约束
+            from finagent.graph.prompts import WRITING_RULES
+
+            prompt = prompt + "\n\n" + WRITING_RULES
 
         context_lines = [f"用户请求：{question}"]
         if prior_artifacts:

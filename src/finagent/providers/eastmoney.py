@@ -403,9 +403,19 @@ class EastmoneyProvider(MarketDataProvider):
     def daily_basic(
         self, ts_code: str, start_date: str | None = None, end_date: str | None = None
     ) -> pd.DataFrame:
-        """只给**最新**一行估值。历史估值没有稳定的公开接口，宁缺毋滥。"""
+        """只给**最新**一行估值。历史估值没有稳定的公开接口，宁缺毋滥。
 
-        data = self._quote(ts_code)
+        东财的报价接口（``push2``）是最容易被限流的一个。它挂了不代表没有估值数据：
+        新浪的全市场列表里就带着 ``per`` / ``pb`` / 市值，走一次（带缓存的）兜底查询
+        即可。拿不到就明确报错，绝不编一个 PE 出来。
+        """
+
+        try:
+            data = self._quote(ts_code)
+        except Exception as exc:  # noqa: BLE001 - 报价接口被限流时改用列表兜底
+            log.warning("东方财富估值接口不可用（%s），改用新浪列表兜底", str(exc)[:60])
+            return self._daily_basic_from_universe(ts_code)
+
         total_mv = self._num(data.get("f116"))
         circ_mv = self._num(data.get("f117"))
         row = {
@@ -420,6 +430,35 @@ class EastmoneyProvider(MarketDataProvider):
             "total_mv": round(total_mv / 10000.0, 2) if total_mv is not None else None,
             "circ_mv": round(circ_mv / 10000.0, 2) if circ_mv is not None else None,
             "turnover_rate": self._num(data.get("f168")),
+        }
+        return pd.DataFrame([row])
+
+    def _daily_basic_from_universe(self, ts_code: str) -> pd.DataFrame:
+        """从全市场宽表里取这一只的估值行（会自动走新浪兜底与缓存）。"""
+
+        universe = self.screening_universe()
+        matched = universe[universe["ts_code"] == ts_code]
+        if matched.empty:
+            from finagent.errors import ProviderUnavailable
+
+            raise ProviderUnavailable(
+                f"暂时拿不到 {ts_code} 的估值数据（行情接口被限流）。",
+                hint="稍后重试；或用 mx_financial_data 查市盈率等指标。",
+            )
+
+        record = matched.iloc[0]
+        row = {
+            "ts_code": ts_code,
+            "trade_date": time.strftime("%Y%m%d"),
+            "close": record.get("close"),
+            "pe": record.get("pe"),
+            "pe_ttm": record.get("pe"),
+            "pb": record.get("pb"),
+            "ps": None,
+            "total_mv": record.get("total_mv"),
+            "circ_mv": record.get("circ_mv"),
+            "turnover_rate": record.get("turnover_rate"),
+            "source": "sina-universe",
         }
         return pd.DataFrame([row])
 

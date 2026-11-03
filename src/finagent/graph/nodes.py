@@ -705,10 +705,24 @@ _STOP_LABELS = {
 #: 只留在 trace 与日志里，不进交付内容。
 _GAP_MARKERS = ("不提供", "不支持", "not supported")
 
+#: 传输层抖动（断连、超时）同样不该糊到用户脸上：回答里已经会写「接口暂时不可用」，
+#: 再贴一遍 ``Remote end closed connection without response`` 只有噪音。
+_TRANSPORT_MARKERS = (
+    "Remote end closed",
+    "Connection",
+    "timed out",
+    "timeout",
+    "URLError",
+    "Max retries",
+    "执行失败",
+)
+
 
 def _expected_gap(error: str) -> bool:
+    """这条错误是否属于「预期内的边界」，不该出现在交付内容里。"""
+
     text = str(error or "")
-    return any(marker in text for marker in _GAP_MARKERS)
+    return any(marker in text for marker in (*_GAP_MARKERS, *_TRANSPORT_MARKERS))
 
 
 def _hash(text: str) -> str:
@@ -799,7 +813,15 @@ def _compose_answer(state: FinState) -> str:
         body = _apology(state)
 
     if errors and not sections:
-        body += "\n\n_技术细节：\n" + "\n".join(f"- {error}" for error in errors[:5]) + "_"
+        # 只有完全没产出时才提技术细节，且不要糊一屏原始报错
+        body += "\n\n_部分数据接口暂时不可用，可稍后重试。_"
+
+    if sections:
+        # 统一一条收尾，而不是让每个子职责各写一份
+        body += (
+            "\n\n> 风险提示：以上为公开数据整理与技术判断，不构成投资建议；"
+            "市场有风险，决策请自行独立判断。"
+        )
 
     if profile_updates and sections:
         body += (
