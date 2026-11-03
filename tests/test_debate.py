@@ -10,6 +10,11 @@ from __future__ import annotations
 import pytest
 
 from finagent.graph import open_app
+from finagent.graph.contract import (
+    Termination,
+    ToolTraceEntry,
+    normalize_result,
+)
 from finagent.graph.experts import ExpertOutcome
 from finagent.graph.state import EXPERT_AGENTS
 
@@ -28,12 +33,18 @@ def _outcome(agent: str, answer: str, *, tool_calls: int = 1, preview: str = "")
         if tool_calls
         else []
     )
-    return ExpertOutcome(
-        agent=agent,
-        answer=answer,
-        trace=trace,
-        tool_calls=tool_calls,
+    # 构造走契约：下游只认 ExpertResult，测试也用同一条路径，
+    # 否则测的是「旧的手工对象」，验证不到真实执行协议。
+    return normalize_result(
+        agent_name=agent,
+        text=answer,
+        termination=Termination.SUBMIT,
+        tool_trace=[
+            ToolTraceEntry(call_id="c1", tool="get_realtime_price", status="ok")
+            for _ in range(tool_calls)
+        ],
         mode="deterministic",
+        trace=trace,
     )
 
 

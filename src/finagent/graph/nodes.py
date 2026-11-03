@@ -287,7 +287,13 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
                 "是" if is_revision else "否",
             )
 
-            entry: dict[str, Any] = {"agent": agent, "answer": outcome.answer}
+            entry: dict[str, Any] = {
+                "agent": agent,
+                "answer": outcome.answer,
+                # 执行协议里的终止事实，随结论一起留给下游与决策轨迹
+                "status": str(outcome.status),
+                "termination_reason": str(outcome.termination_reason),
+            }
             if is_revision:
                 entry["revised"] = True
                 entry["revision"] = int((state.get("revisions") or {}).get(agent, 0))
@@ -313,6 +319,22 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
                 update["answers"] = Overwrite([*previous, entry])
             else:
                 update["answers"] = [entry]
+
+            # 没有可交付内容（契约违反 / 模型失败）时不必再进审查——
+            # 拿一段空文本去问「这段靠谱吗」纯属浪费一次模型调用。
+            if not outcome.answer.strip():
+                log.warning("专家 %s 没有可交付内容（%s），跳过审查", agent, outcome.termination_reason)
+                update["next_agent"] = "finish"
+                update["decision_log"] = [
+                    {
+                        "step": "expert",
+                        "agent": agent,
+                        "label": AGENT_LABELS.get(agent, agent),
+                        "termination_reason": str(outcome.termination_reason),
+                        "detail": "本轮没有产出可交付结论，已跳过审查",
+                    }
+                ]
+                return Command(goto="supervisor", update=update)
 
             return Command(goto="critic", update=update)
 

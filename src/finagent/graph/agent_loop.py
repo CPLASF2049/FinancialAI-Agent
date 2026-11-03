@@ -49,6 +49,12 @@ class ToolCallRecord:
     error: str | None = None
     #: 这次调用属于哪个子职责（screening / fundamental / technical …），仅用于观测。
     stage: str = ""
+    #: 调用标识，与 ``tool:call`` 事件对应，同时也是幂等键。
+    call_id: str = ""
+    #: 这次调用花了多久（毫秒）。
+    latency_ms: int = 0
+    #: 结果占多少 token（粗略估算，用于上下文预算）。
+    result_tokens: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -60,6 +66,9 @@ class ToolCallRecord:
         }
         if self.stage:
             payload["stage"] = self.stage
+        if self.call_id:
+            payload["call_id"] = self.call_id
+        payload["latency_ms"] = self.latency_ms
         if self.error:
             payload["error"] = self.error
         return payload
@@ -71,6 +80,10 @@ class LoopResult:
     records: list[ToolCallRecord] = field(default_factory=list)
     iterations: int = 0
     stopped_reason: str = "completed"
+    input_tokens: int = 0
+    output_tokens: int = 0
+    #: 连续失败的工具调用次数（成功一次就清零）。用于 ``tool_failure`` 终止。
+    consecutive_failures: int = 0
 
     @property
     def tool_calls(self) -> int:
@@ -154,6 +167,12 @@ async def run_tool_loop(
     stage: str = "",
     #: 本轮截止时刻（``time.monotonic()`` 绝对值）。到了就停，别把整轮拖成几分钟。
     deadline: float | None = None,
+    #: token 预算；模型回报 usage 时累计，超了就停。
+    token_budget: int | None = None,
+    #: 连续失败多少个工具调用就放弃（防止对着一个坏接口死磕）。
+    max_consecutive_failures: int = 3,
+    #: 外部取消信号。返回 True 就停。
+    is_cancelled: Any = None,
 ) -> LoopResult:
     """跑到模型不再调用工具为止，并逐次记录每次调用。"""
 
@@ -175,6 +194,16 @@ async def run_tool_loop(
     for iteration in range(1, max_iterations + 1):
         # 时间预算要能穿透到节点内部：模型慢的时候，光靠 supervisor 之间检查
         # 拦不住单个专家——它内部可能连着跑好几次工具调用，把一轮拖到几分钟。
+        if is_cancelled is not None and is_cancelled():
+            log.info("工具循环收到取消信号，停止")
+            result.stopped_reason = "cancelled"
+            break
+
+        if token_budget is not None and (result.input_tokens + result.output_tokens) > token_budget:
+            log.warning("token 预算用尽，停止继续调用工具")
+            result.stopped_reason = "budget_tokens"
+            break
+
         if deadline is not None and time.monotonic() > deadline:
             log.warning("工具循环已超时（第 %d 轮前），停止继续调用工具", iteration)
             result.stopped_reason = "deadline"
@@ -184,10 +213,21 @@ async def run_tool_loop(
         response = await _call_model(bound, messages, agent=agent, emit=emit)
         messages.append(response)
 
+        # 计费口径：LangChain 的 usage_metadata 是标准字段，没有就跳过。
+        usage = getattr(response, "usage_metadata", None) or {}
+        if isinstance(usage, dict):
+            result.input_tokens += int(usage.get("input_tokens") or 0)
+            result.output_tokens += int(usage.get("output_tokens") or 0)
+
         tool_calls = getattr(response, "tool_calls", None) or []
         if not tool_calls:
             result.text = _content_to_text(response)
             result.stopped_reason = "completed"
+            break
+
+        if result.consecutive_failures >= max_consecutive_failures:
+            log.warning("连续 %d 次工具失败，停止本轮工具循环", result.consecutive_failures)
+            result.stopped_reason = "tool_failure"
             break
 
         for call in tool_calls:
@@ -197,6 +237,7 @@ async def run_tool_loop(
 
             record = ToolCallRecord(stage=stage, agent=agent, tool=name, args=args)
             tool = by_name.get(name)
+            started = time.monotonic()
             if tool is None:
                 record.ok = False
                 record.error = f"未知工具 '{name}'"
@@ -206,6 +247,7 @@ async def run_tool_loop(
                 )
             else:
                 emit({"event": "tool_call", "agent": agent, "tool": name, "args": args})
+                started = time.monotonic()
                 try:
                     payload = await tool.ainvoke(args)
                 except Exception as exc:  # noqa: BLE001 - surface, never crash the graph
@@ -223,6 +265,10 @@ async def run_tool_loop(
                     record.ok = False
                     record.error = error
             record.preview = _preview(stringify_tool_output(payload))
+            record.call_id = call_id
+            record.latency_ms = int((time.monotonic() - started) * 1000)
+            record.result_tokens = max(1, len(record.preview) // 4)
+            result.consecutive_failures = 0 if record.ok else result.consecutive_failures + 1
             result.records.append(record)
             emit(
                 {

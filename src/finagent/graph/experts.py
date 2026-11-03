@@ -24,13 +24,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.messages import HumanMessage
 
 from finagent.graph import offline
 from finagent.graph.agent_loop import run_tool_loop
+from finagent.graph.contract import (
+    ExpertResult,
+    StructuredError,
+    Termination,
+    TokenUsage,
+    ToolTraceEntry,
+    normalize_result,
+)
 from finagent.graph.mcp_client import Toolkit
 from finagent.graph.prompts import build_expert_prompt
 from finagent.graph.state import AGENT_LABELS
@@ -129,20 +136,52 @@ EXPERT_TOOLS: dict[str, tuple[str, ...]] = {
 MEMORY_TOOLS: tuple[str, ...] = ("get_user_profile", "update_user_profile")
 
 
-@dataclass(slots=True)
-class ExpertOutcome:
-    agent: str
-    answer: str
-    artifacts: dict[str, Any] = field(default_factory=dict)
-    errors: list[str] = field(default_factory=list)
-    trace: list[dict[str, Any]] = field(default_factory=list)
-    tool_calls: int = 0
-    mode: str = "deterministic"
-    #: 这个节点内部实际跑了哪些子职责（screening / fundamental / technical …）。
-    passes: list[str] = field(default_factory=list)
+#: 专家执行结果就是契约类型本身（见 :mod:`finagent.graph.contract`）。
+#: 旧名字保留，避免一次性改爆所有调用点；但**新代码请用 ExpertResult**。
+ExpertOutcome = ExpertResult
 
-    def label(self) -> str:
-        return AGENT_LABELS.get(self.agent, self.agent)
+
+def _label(agent: str) -> str:
+    return AGENT_LABELS.get(agent, agent)
+
+
+def _traces(records: list[Any]) -> list[ToolTraceEntry]:
+    """把循环记录转成契约里的工具轨迹。"""
+
+    entries: list[ToolTraceEntry] = []
+    for record in records:
+        entries.append(
+            ToolTraceEntry(
+                call_id=getattr(record, "call_id", "") or "",
+                tool=getattr(record, "tool", ""),
+                args=dict(getattr(record, "args", {}) or {}),
+                status="ok" if getattr(record, "ok", False) else "error",
+                latency_ms=int(getattr(record, "latency_ms", 0) or 0),
+                result_tokens=int(getattr(record, "result_tokens", 0) or 0),
+                error=str(getattr(record, "error", "") or ""),
+            )
+        )
+    return entries
+
+
+#: 工具循环的停止原因 -> 契约终止原因。
+_STOP_TO_TERMINATION = {
+    "completed": Termination.SUBMIT,
+    "max_iterations": Termination.BUDGET_ITERATIONS,
+    "deadline": Termination.BUDGET_WALLCLOCK,
+    "budget_tokens": Termination.BUDGET_TOKENS,
+    "tool_failure": Termination.TOOL_FAILURE,
+    "cancelled": Termination.CANCELLED,
+}
+
+
+def _termination_from(*, loops: Any = ()) -> Termination:
+    """取最后一个循环的停止原因；没有循环就当作 submit。"""
+
+    reasons = [getattr(item, "stopped_reason", "") for item in loops or ()]
+    if not reasons:
+        return Termination.SUBMIT
+    return _STOP_TO_TERMINATION.get(str(reasons[-1]), Termination.SUBMIT)
 
 
 #: 妙想工具的前缀。它们是否出现在工具面里取决于用户有没有配 MX_APIKEY，
@@ -192,7 +231,17 @@ async def run_expert(
     """
 
     if agent not in AGENT_PASSES:
-        return ExpertOutcome(agent=agent, answer="", errors=[f"unknown expert '{agent}'"])
+        return normalize_result(
+            agent_name=agent,
+            text="",
+            termination=Termination.CONTRACT_VIOLATION,
+            error=StructuredError(
+                code="unknown_agent",
+                message=f"未知专家 '{agent}'",
+                retryable=False,
+            ),
+            mode="deterministic",
+        )
 
     selected = passes or _default_passes(agent, question)
     if not selected:
@@ -247,16 +296,26 @@ async def _run_deterministic(
         artifacts.update(result.artifacts)
         errors.extend(error for error in result.errors if error)
 
-    return ExpertOutcome(
-        agent=agent,
-        answer="\n\n".join(sections),
-        artifacts=artifacts,
-        errors=errors
-        + [record.error or "" for record in runner.records if not record.ok and record.error],
-        trace=runner.to_dicts(),
-        tool_calls=len(runner.records),
-        mode="deterministic",
+    body = "\n\n".join(sections)
+    # 确定性路径同样要给出显式终止原因：有结论 = submit，没结论 = 契约违反。
+    return normalize_result(
+        agent_name=agent,
+        text=body,
+        termination=(Termination.SUBMIT if body.strip() else Termination.CONTRACT_VIOLATION),
+        tool_trace=_traces(runner.records),
+        error=(
+            None
+            if body.strip()
+            else StructuredError(
+                code="empty_output",
+                message="确定性路径没有产出任何结论",
+                retryable=False,
+            )
+        ),
         passes=list(passes),
+        mode="deterministic",
+        artifacts=artifacts,
+        trace=runner.to_dicts(),
     )
 
 
@@ -350,6 +409,7 @@ async def _run_llm(
     artifacts: dict[str, Any] = {}
     errors: list[str] = []
     records: list[Any] = []
+    loops: list[Any] = []
     total_calls = 0
 
     for name in passes:
@@ -386,20 +446,42 @@ async def _run_llm(
         if loop.text.strip():
             sections.append(loop.text if len(passes) == 1 else _with_heading(name, loop.text))
         records.extend(loop.records)
+        loops.append(loop)
         total_calls += loop.tool_calls
         if loop.records:
             artifacts[name] = _artifact_from_records(loop.records)
         errors.extend(record.error for record in loop.records if not record.ok and record.error)
 
-    return ExpertOutcome(
-        agent=agent,
-        answer="\n\n".join(sections),
-        artifacts=artifacts,
-        errors=errors,
-        trace=[record.to_dict() for record in records],
-        tool_calls=total_calls,
-        mode="llm",
+    body = "\n\n".join(sections)
+    # 终止原因取最后一个子职责的循环停止原因；一节都没产出就是契约违反。
+    termination = (
+        _termination_from(loops=loops) if body.strip() else Termination.CONTRACT_VIOLATION
+    )
+    usage = TokenUsage(
+        input_tokens=sum(int(getattr(item, "input_tokens", 0) or 0) for item in loops),
+        output_tokens=sum(int(getattr(item, "output_tokens", 0) or 0) for item in loops),
+    )
+
+    return normalize_result(
+        agent_name=agent,
+        text=body,
+        termination=termination,
+        tool_trace=_traces(records),
+        usage=usage,
+        error=(
+            None
+            if body.strip()
+            else StructuredError(
+                code="empty_output",
+                message="模型没有产出可交付的结论",
+                hint="检查模型可用性与提示词。",
+                retryable=True,
+            )
+        ),
         passes=list(passes),
+        mode="llm",
+        artifacts=artifacts,
+        trace=[record.to_dict() for record in records],
     )
 
 

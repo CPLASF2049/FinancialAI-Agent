@@ -14,6 +14,7 @@ import asyncio
 import pytest
 
 from finagent.graph import open_app
+from finagent.graph.contract import Termination, normalize_result
 from finagent.graph.experts import ExpertOutcome
 from finagent.settings import reset_settings_cache
 
@@ -37,7 +38,12 @@ def _bad_expert(answer: str = "茅台现价 1234 元，必涨。"):
 
     async def runner(agent: str, question: str, **kwargs) -> ExpertOutcome:
         calls.append(agent)
-        return ExpertOutcome(agent=agent, answer=answer, trace=[], tool_calls=0)
+        return normalize_result(
+            agent_name=agent,
+            text=answer,
+            termination=Termination.SUBMIT,
+            mode="deterministic",
+        )
 
     runner.calls = calls  # type: ignore[attr-defined]
     return runner
@@ -139,7 +145,12 @@ async def test_unchanged_answer_is_not_revised_twice(offline_env, monkeypatch) -
     async def stubborn(agent: str, question: str, **kwargs) -> ExpertOutcome:
         calls.append(agent)
         # 每次返工都给出**完全相同**的结论
-        return ExpertOutcome(agent=agent, answer="茅台现价 1234 元。", trace=[], tool_calls=0)
+        return normalize_result(
+            agent_name=agent,
+            text="茅台现价 1234 元。",
+            termination=Termination.SUBMIT,
+            mode="deterministic",
+        )
 
     monkeypatch.setattr("finagent.graph.nodes.run_expert", stubborn)
 
