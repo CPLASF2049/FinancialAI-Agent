@@ -173,6 +173,8 @@ async def run_tool_loop(
     max_consecutive_failures: int = 3,
     #: 外部取消信号。返回 True 就停。
     is_cancelled: Any = None,
+    #: 上下文预算（token）。超过就先压缩中间工具结果，再发起模型请求。
+    context_budget: int = 24_000,
 ) -> LoopResult:
     """跑到模型不再调用工具为止，并逐次记录每次调用。"""
 
@@ -210,6 +212,10 @@ async def run_tool_loop(
             break
 
         result.iterations = iteration
+        # 进模型之前先压一压：等上下文溢出再处理就晚了
+        from finagent.graph.compaction import compact
+
+        messages = compact(messages, budget=context_budget)
         response = await _call_model(bound, messages, agent=agent, emit=emit)
         messages.append(response)
 

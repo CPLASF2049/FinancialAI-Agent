@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -56,6 +57,8 @@ class GraphResources:
     settings: Settings
     store: Any = None
     model_getter: Callable[[], Any] = lambda: None
+    #: append-only 事件表（P1-1）。为 None 时退化成「只出 SSE、不落盘」。
+    events: Any = None
 
     @property
     def model(self) -> Any:
@@ -112,7 +115,20 @@ def _parse_supervisor(text: str) -> dict[str, Any]:
 
 
 # ----------------------------------------------------------------------
+def _recorder_factory(events: Any) -> Callable[[str], Any]:
+    """按 task_id 造一个 recorder；没有事件表就是空实现。"""
+
+    from finagent.core.events import TurnRecorder
+
+    def make(task_id: str) -> TurnRecorder:
+        return TurnRecorder(events, task_id or "")
+
+    return make
+
+
 def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
+    recorder = _recorder_factory(resources.events)
+
     toolkit = resources.toolkit
     settings = resources.settings
     store = resources.store
@@ -218,6 +234,9 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
             }
         )
 
+        recorder(str(state.get("task_id") or "")).record(
+            "route:decision", from_node="supervisor", to_node=agent, reason=reason
+        )
         return Command(
             goto=agent,
             update={
@@ -268,6 +287,13 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
             critique = state.get("critique") or {}
             is_revision = critique.get("agent") == agent and critique.get("verdict") == "revise"
 
+            step_started = time.monotonic()
+            recorder(str(state.get("task_id") or "")).record(
+                "step:start",
+                agent=agent,
+                step_id=f"{agent}-{int(step_started * 1000)}",
+                is_revision=is_revision,
+            )
             outcome = await run_expert(
                 agent,
                 question,
@@ -297,6 +323,31 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
             if is_revision:
                 entry["revised"] = True
                 entry["revision"] = int((state.get("revisions") or {}).get(agent, 0))
+
+            # 工具调用逐一落盘（trace 已含 call_id / 耗时 / 状态）
+            for item in outcome.trace:
+                record_ = recorder(str(state.get("task_id") or ""))
+                record_.record(
+                    "tool:call",
+                    tool=item.get("tool"),
+                    agent=agent,
+                    call_id=item.get("call_id"),
+                )
+                record_.record(
+                    "tool:result",
+                    tool=item.get("tool"),
+                    call_id=item.get("call_id"),
+                    status="ok" if item.get("ok") else "error",
+                    latency_ms=item.get("latency_ms", 0),
+                    error=(item.get("error") or "")[:200],
+                )
+            recorder(str(state.get("task_id") or "")).record(
+                "step:end",
+                agent=agent,
+                wall_time_ms=int((time.monotonic() - step_started) * 1000),
+                termination_reason=str(outcome.termination_reason),
+                token_usage=outcome.token_usage.to_dict(),
+            )
 
             update: dict[str, Any] = {
                 **_bump(state),
@@ -514,6 +565,13 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
             result.source,
         )
 
+        recorder(str(state.get("task_id") or "")).record(
+            "review:verdict",
+            agent=agent,
+            verdict=payload["verdict"],
+            issues=result.issues,
+        )
+
         log_entry = {
             "step": "critic",
             "agent": agent,
@@ -558,6 +616,15 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
             held_codes=held_codes_from(state.get("artifacts")),
             provider=settings.provider,
         )
+        if outcome.flags:
+            for flag in outcome.flags:
+                recorder(str(state.get("task_id") or "")).record(
+                    "risk:triggered",
+                    rule_name=flag.get("type") or flag.get("label") or "risk",
+                    action_taken="已标注并提示",
+                    detail=flag.get("detail") or "",
+                )
+
         if not outcome.flags:
             return {"answer": outcome.text}
 
@@ -626,6 +693,14 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
 
         # risk_guard 可能已经改写过正文（风控拦截），优先用它的结果
         body = state.get("answer") or _compose_answer(state)
+
+        recorder(str(state.get("task_id") or "")).record(
+            "turn:end",
+            status=str(state.get("stop_reason") or "completed"),
+            steps=int(state.get("steps") or 0),
+            agents=list(state.get("completed_agents") or []),
+            answer_chars=len(body),
+        )
 
         return {
             "answer": body,

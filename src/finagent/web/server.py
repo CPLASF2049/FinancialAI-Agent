@@ -43,6 +43,7 @@ from starlette.responses import (
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
+from finagent.core.phase import resume_hint
 from finagent.core.store import StoreError
 from finagent.graph import FinAgentApp
 from finagent.graph.experts import describe_experts
@@ -146,6 +147,36 @@ async def index(request: Request) -> Response:
         body,
         # 页面本身必须每次回源校验，否则浏览器会一直用旧的 HTML（也就一直引用旧资源）
         headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
+
+
+async def api_trace(request: Request) -> Response:
+    """按 task_id 还原一次执行链路。
+
+    返回事件时间线 + 三个开箱查询（最慢节点 / 失败工具 / 返工原因），
+    这样排查「为什么慢、为什么返工」不用去翻日志。
+    """
+
+    web = state_of(request)
+    task_id = (request.path_params or {}).get("task_id") or ""
+    store = getattr(web.app, "events", None) if web.app is not None else None
+    if store is None:
+        return JSONResponse({"ok": False, "error": "事件表未启用"}, status_code=503)
+
+    events = store.query(task_id)
+    if not events:
+        return JSONResponse({"ok": False, "error": f"找不到 task {task_id}"}, status_code=404)
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "task_id": task_id,
+            "timeline": [event.to_dict() for event in events],
+            "slowest_steps": store.slowest_steps(task_id),
+            "failed_tools": store.failed_tools(task_id),
+            "revisions": store.revisions(task_id),
+            "resume": resume_hint(events),
+        }
     )
 
 
@@ -591,6 +622,7 @@ def build_app(settings: Settings | None = None, *, transport: str | None = None)
     routes = [
         Route("/", index),
         Route("/api/info", api_info),
+        Route("/api/trace/{task_id}", api_trace),
         Route("/api/llm", api_llm, methods=["GET", "POST"]),
         Route("/api/threads", api_threads, methods=["GET", "POST"]),
         Route("/api/threads/{thread_id}", api_thread, methods=["GET", "DELETE"]),

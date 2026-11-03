@@ -87,13 +87,26 @@ class TurnResult:
 
 
 # ----------------------------------------------------------------------
+def _event_store(settings: Any) -> Any:
+    """事件表放在数据目录里；建不出来就返回 None（降级为不落盘）。"""
+
+    try:
+        from finagent.core.events import EventStore
+
+        return EventStore(settings.resolve_data_dir() / "events.db")
+    except Exception as exc:  # noqa: BLE001 - 审计能力不该成为可用性风险
+        log.debug("事件表不可用，跳过落盘：%s", exc)
+        return None
+
+
 def build_graph(resources: GraphResources, *, checkpointer: Any = None) -> Any:
     """编译 StateGraph。一次性运行时可把 ``checkpointer`` 传 ``None``。"""
 
     nodes = build_nodes(resources)
 
     graph = StateGraph(FinState)
-    graph.add_node("load_memory", _reset_turn(nodes["load_memory"]))
+    event_store = resources.events
+    graph.add_node("load_memory", _reset_turn(nodes["load_memory"], event_store))
     graph.add_node("supervisor", nodes["supervisor"])
     for agent in EXPERT_AGENTS:
         graph.add_node(agent, nodes[agent])
@@ -114,7 +127,7 @@ def build_graph(resources: GraphResources, *, checkpointer: Any = None) -> Any:
     return graph.compile(checkpointer=checkpointer)
 
 
-def _reset_turn(load_memory):
+def _reset_turn(load_memory, event_store: Any = None):
     """包一层 ``load_memory``，让本轮的通道从干净状态开始。
 
     checkpointer 会跨轮持久化状态，这正是 ``messages`` 和 ``user_profile`` 想要的；但
@@ -125,6 +138,8 @@ def _reset_turn(load_memory):
     async def wrapped(state: FinState) -> dict[str, Any]:
         question = state.get("question") or ""
         memory = await load_memory(state)
+        # task_id 按「用户 + 时间戳」生成：事件表按它建索引，跨轮也不会撞。
+        owner = str(state.get("user_id") or "default")
         update: dict[str, Any] = {
             # 带 reducer 的通道要用 Overwrite 才能清空；普通的 LastValue 通道直接返回新值即可替换。
             "completed_agents": Overwrite([]),
@@ -142,6 +157,7 @@ def _reset_turn(load_memory):
             "total_revisions": 0,
             "stop_reason": "",
             "turn_started": time.monotonic(),
+            "task_id": f"task_{int(time.time() * 1000)}_{owner[-6:]}",
             "next_agent": "supervisor",
             "route_reason": "",
             "answer": "",
@@ -149,6 +165,19 @@ def _reset_turn(load_memory):
         if question:
             update["messages"] = [HumanMessage(content=question)]
         update.update(memory)
+
+        # turn:start —— 一次执行的起点，回放时按它定位整条链路
+        try:
+            from finagent.core.events import TurnRecorder
+
+            TurnRecorder(event_store, update["task_id"]).record(
+                "turn:start",
+                task_id=update["task_id"],
+                question=question[:200],
+                owner=owner,
+            )
+        except Exception as exc:  # noqa: BLE001 - 审计失败不影响回答
+            log.debug("turn:start 落盘失败：%s", exc)
         return update
 
     return wrapped
@@ -247,8 +276,11 @@ class FinAgentApp:
             )
 
         self.toolkit = toolkit
+        # 事件表挂在数据目录；建不出来就降级为不落盘（审计不该影响可用性）
+        self.events = _event_store(resolved)
         self.graph = build_graph(
             GraphResources(
+                events=self.events,
                 toolkit=toolkit,
                 settings=resolved,
                 store=self.store,

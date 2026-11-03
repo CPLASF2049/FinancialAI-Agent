@@ -116,6 +116,9 @@ class FinState(TypedDict, total=False):
     #: 每个专家被要求返工了几次，用来封顶修订循环。
     revisions: dict[str, int]
 
+    #: 本次 turn 的唯一标识，事件表按它建索引、做回放。
+    task_id: str
+
     # 预算与终止 ---------------------------------------------------------
     #: 本轮已经执行了多少个图节点（含 supervisor / 专家 / 审查者）。
     steps: int

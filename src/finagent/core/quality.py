@@ -52,6 +52,7 @@ class RuleCode(StrEnum):
     UNIT_UNDECLARED = "unit_undeclared"
     REPORT_PERIOD_UNKNOWN = "report_period_unknown"
     MISSING_VALUES = "missing_values"
+    ADJUSTMENT_DISCONTINUITY = "adjustment_discontinuity"
 
 
 class DataQualityViolation(FinAgentError):
@@ -302,6 +303,49 @@ def check_missing(frame: pd.DataFrame, *, columns: list[str] | None = None) -> Q
 
 
 # ----------------------------------------------------------------------
+def check_adjustment_continuity(
+    previous: pd.DataFrame,
+    current: pd.DataFrame,
+    *,
+    tolerance: float = 0.005,
+    column: str = "close",
+) -> QualityReport:
+    """复权因子链连续性：两次取到的同一段历史，价格比例不该跳变。
+
+    供应商切换复权口径（前复权 / 后复权 / 不复权）时**不会报错**，只会让历史价格
+    整体平移。这在回测里表现为「昨天还是 100 元的股票，今天历史变成 110 元」——
+    所有基于价格比例的指标都会悄悄失真。这里用重叠区间的比值来检测。
+    """
+
+    report = QualityReport()
+    if previous is None or current is None or previous.empty or current.empty:
+        return report
+    if "trade_date" not in previous.columns or "trade_date" not in current.columns:
+        return report
+
+    left = previous[["trade_date", column]].dropna().set_index("trade_date")[column]
+    right = current[["trade_date", column]].dropna().set_index("trade_date")[column]
+    common = left.index.intersection(right.index)
+    if len(common) == 0:
+        return report
+
+    report.checked = len(common)
+    ratios = (right.loc[common] / left.loc[common]).astype(float)
+    drift = (ratios - 1.0).abs().max()
+    if drift > tolerance:
+        report.violations.append(
+            Violation(
+                RuleCode.ADJUSTMENT_DISCONTINUITY,
+                f"复权口径不一致：重叠区间价格比例最大偏离 {drift:.2%}",
+                detail=(
+                    "同一段历史两次取到的价格不成比例，供应商可能换了复权方式；"
+                    "回测结果会因此失真。"
+                ),
+            )
+        )
+    return report
+
+
 def validate_series(
     frame: pd.DataFrame,
     *,

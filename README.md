@@ -961,6 +961,56 @@ finagent audit --ts-code 600519.SH
 **口径**：日线收盘成交、100 股整手、双边佣金 0.03%、卖出印花税 0.05%，未建模滑点与
 停牌，基准默认沪深 300（000001.SH）。
 
+### 执行协议、数据质量与可观测性
+
+这三层决定了「出了问题能不能说清楚」，比「能不能答」更难做对。
+
+**执行协议（P0-1）**：每个专家返回 `ExpertResult`，终止原因是显式枚举——
+`submit / budget_iterations / budget_tokens / budget_wallclock / tool_failure /
+model_failure / contract_violation / cancelled`。不再靠「模型不再调工具」这种隐式信号，
+所以「预算耗尽」和「做完了」能被区分开：前者结果标记为 `partial` 并给出原因。
+
+**数据质量契约（P0-2）**：在数据进入模型上下文之前做可执行校验。`known_at <= 决策时刻`
+不满足就返回 `DATA_QUALITY_VIOLATION`，而不是让模型在结论里写一句「可能有延迟」。
+另外校验代码后缀一致性、估值口径声明、报告期与公告日分离、缺失值标记。
+
+**回测场景**：涨跌停买不进/卖不出、滑点、双边成本下限（0.2%）、复权口径跳变都会被显式
+处理或告警，而不是悄悄算进收益里。
+
+**事件流（P1-1）**：每次执行按 `task_id` 落一张 append-only 事件表
+（`turn:start` → `route:decision` → `step:start` → `tool:call`/`tool:result` →
+`step:end` → `review:verdict` → `risk:triggered` → `turn:end`）。三个开箱查询：
+
+```
+GET /api/trace/{task_id}
+  -> timeline       按序还原执行链路
+  -> slowest_steps  最慢的节点
+  -> failed_tools   失败的工具有哪些
+  -> revisions      为什么返工
+  -> resume         中断在哪个阶段、恢复时该跳过什么
+```
+
+**上下文压缩（P1-2）**：每次模型调用前估算 token，超预算就修剪中间工具结果；
+审查意见与风控命中属于审计证据，**永不压缩**。
+
+### 质量评测集
+
+`eval/tasks.json` 里 34 条黄金任务，覆盖报价、走势、估值、财报、选股、回测、持仓、
+预警、宏观、偏好、复合意图、风控、诚实性（不该编数据的场景）。
+
+```bat
+python scripts\eval_suite.py                    :: 跑全量，输出 eval/report.json
+python scripts\eval_suite.py --limit 5          :: 冒烟
+python scripts\eval_suite.py --save baseline    :: 存档基线
+python scripts\eval_suite.py --compare baseline :: 与基线对比
+```
+
+指标：工具准确率、忠实度（数字能否追溯到工具返回）、幻觉率、返工次数、
+风控命中率与误拦率、token 与 P95 墙钟。
+
+> 基线已存为 `eval/baseline.json`（离线确定性模式）。**改造前先跑一次**才有参照，
+> 现在基线已在仓库里，后续每完成一项就 `--compare baseline` 看有没有退化。
+
 ### 为什么它不会卡死
 
 多 Agent 系统最常见的故障不是答错，而是**停不下来**：Supervisor 觉得没做完、反复派活，

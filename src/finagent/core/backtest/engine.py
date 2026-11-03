@@ -27,6 +27,14 @@ from finagent.providers.base import MarketDataProvider
 
 DEFAULT_COMMISSION = 0.0003
 DEFAULT_STAMP_DUTY = 0.0005
+#: 滑点：以对手价成交的代价。A 股小单通常 0.05% 量级。
+DEFAULT_SLIPPAGE = 0.0005
+#: 双边总成本下限。低于这个数的回测在真实市场里不成立。
+MIN_ROUND_TRIP_COST = 0.002
+#: 涨跌停幅度：主板 10%、创业板/科创板 20%、北交所 30%。
+_LIMIT_MAIN = 0.10
+_LIMIT_GROWTH = 0.20
+_LIMIT_BJ = 0.30
 LOT_SIZE = 100
 
 
@@ -57,6 +65,10 @@ class BacktestResult:
     win_rate_pct: float | None
     exposure_pct: float
     benchmark: dict[str, Any] | None = None
+    #: 成本模型（让「扣了多少」可复核，而不是埋在实现里）
+    cost_model: dict[str, float] = field(default_factory=dict)
+    #: 被拒绝的成交：涨跌停买不进/卖不出、停牌无行情
+    skipped: dict[str, int] = field(default_factory=dict)
     equity_curve: list[dict[str, Any]] = field(default_factory=list)
     trades: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
@@ -98,6 +110,10 @@ class BacktestResult:
         }
         if self.benchmark is not None:
             payload["benchmark"] = self.benchmark
+        if self.cost_model:
+            payload["cost_model"] = self.cost_model
+        if self.skipped:
+            payload["skipped"] = self.skipped
         if self.warnings:
             payload["warnings"] = self.warnings
         return payload
@@ -113,6 +129,8 @@ class BacktestEngine:
         initial_capital: float = 100_000.0,
         commission: float = DEFAULT_COMMISSION,
         stamp_duty: float = DEFAULT_STAMP_DUTY,
+        slippage: float = DEFAULT_SLIPPAGE,
+        enforce_price_limits: bool = True,
     ) -> None:
         if initial_capital <= 0:
             raise InvalidArgument("initial_capital 必须为正数。")
@@ -120,6 +138,61 @@ class BacktestEngine:
         self.initial_capital = float(initial_capital)
         self.commission = float(commission)
         self.stamp_duty = float(stamp_duty)
+        self.slippage = float(slippage)
+        self.enforce_price_limits = bool(enforce_price_limits)
+        self.skipped: dict[str, int] = {}
+
+    # ------------------------------------------------------------------
+    def cost_model(self) -> dict[str, float]:
+        """成本模型摘要。双边合计低于 :data:`MIN_ROUND_TRIP_COST` 时给出警告。"""
+
+        round_trip = self.commission * 2 + self.stamp_duty + self.slippage * 2
+        return {
+            "commission": self.commission,
+            "stamp_duty": self.stamp_duty,
+            "slippage": self.slippage,
+            "round_trip": round(round_trip, 6),
+        }
+
+    @staticmethod
+    def limit_pct(ts_code: str) -> float:
+        """按板块给出涨跌停幅度。"""
+
+        code = str(ts_code).partition(".")[0]
+        if code.startswith(("30", "68")):
+            return _LIMIT_GROWTH
+        if code.startswith(("4", "8", "92")):
+            return _LIMIT_BJ
+        return _LIMIT_MAIN
+
+    def _skip(self, reason: str) -> None:
+        self.skipped[reason] = self.skipped.get(reason, 0) + 1
+
+    def _bar_tradable(self, row: dict[str, Any], ts_code: str, action: str) -> bool:
+        """这根 K 线能不能成交？
+
+        涨停买不进、跌停卖不出——这是 A 股回测里最常见的「虚假收益」来源：
+        信号恰好在涨停板上，按收盘价买入在现实中根本成交不了。
+        """
+
+        if not self.enforce_price_limits:
+            return True
+
+        close = float(row.get("close") or 0)
+        pre_close = float(row.get("pre_close") or 0)
+        if close <= 0 or pre_close <= 0:
+            return True
+
+        change = close / pre_close - 1.0
+        limit = self.limit_pct(ts_code)
+        # 留 0.2 个百分点容差：不同数据源的四舍五入会让 10.00% 变成 9.98%
+        if change >= limit - 0.002:
+            self._skip("limit_up")
+            return action != "BUY"
+        if change <= -limit + 0.002:
+            self._skip("limit_down")
+            return action != "SELL"
+        return True
 
     # ------------------------------------------------------------------
     def _load_frame(
@@ -211,35 +284,48 @@ class BacktestEngine:
 
             if in_window and prev_row is not None and signal != 0:
                 if signal == 1 and position == 0 and cash > 0:
+                    if not self._bar_tradable(series, ts_code, "BUY"):
+                        signal = 0
+                elif signal == -1 and position > 0:
+                    if not self._bar_tradable(series, ts_code, "SELL"):
+                        signal = 0
+
+                if signal == 1 and position == 0 and cash > 0:
                     fraction = float(instance.position_fraction(effective_params, context))
                     fraction = max(0.0, min(1.0, fraction))
-                    affordable = int(cash / (price * (1.0 + self.commission)) / LOT_SIZE) * LOT_SIZE
+                    # 成交价带滑点：买单往上吃
+                    fill_price = price * (1.0 + self.slippage)
+                    affordable = (
+                        int(cash / (fill_price * (1.0 + self.commission)) / LOT_SIZE) * LOT_SIZE
+                    )
                     shares = int(affordable * fraction / LOT_SIZE) * LOT_SIZE
                     if shares > 0:
-                        cost = shares * price
+                        cost = shares * fill_price
                         fee = cost * self.commission
                         cash -= cost + fee
                         position = shares
-                        entry_price = price
+                        entry_price = fill_price
                         trades.append(
                             Trade(
                                 date=trade_date,
                                 action="BUY",
-                                price=round(price, 3),
+                                price=round(fill_price, 3),
                                 shares=shares,
                                 fee=round(fee, 2),
                                 cash_after=round(cash, 2),
                             )
                         )
                 elif signal == -1 and position > 0:
-                    revenue = position * price
+                    # 卖单往下让价
+                    fill_price = price * (1.0 - self.slippage)
+                    revenue = position * fill_price
                     fee = revenue * (self.commission + self.stamp_duty)
                     cash += revenue - fee
                     trades.append(
                         Trade(
                             date=trade_date,
                             action="SELL",
-                            price=round(price, 3),
+                            price=round(fill_price, 3),
                             shares=position,
                             fee=round(fee, 2),
                             cash_after=round(cash, 2),
@@ -279,10 +365,23 @@ class BacktestEngine:
             data_start=str(enriched.iloc[0]["trade_date"]),
             provider=str(getattr(self.provider, "name", "") or ""),
             bars=int(len(enriched)),
+            cost_model=self.cost_model(),
+            skipped=dict(self.skipped),
         )
 
         if benchmark:
             result.benchmark = self._benchmark(benchmark, start, end, total_return)
+
+        # 双边成本低于下限时明确告警：这样的回测在真实市场里不成立
+        if self.cost_model()["round_trip"] < MIN_ROUND_TRIP_COST:
+            result.warnings.append(
+                f"双边交易成本仅 {self.cost_model()['round_trip']:.2%}，低于 "
+                f"{MIN_ROUND_TRIP_COST:.2%} 的经验下限，收益可能被高估。"
+            )
+        if self.skipped:
+            result.warnings.append(
+                "有成交被拒绝：" + "、".join(f"{key}={value}" for key, value in self.skipped.items())
+            )
         return result
 
     # ------------------------------------------------------------------
