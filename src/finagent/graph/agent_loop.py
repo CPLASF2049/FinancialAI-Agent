@@ -84,6 +84,8 @@ class LoopResult:
     output_tokens: int = 0
     #: 连续失败的工具调用次数（成功一次就清零）。用于 ``tool_failure`` 终止。
     consecutive_failures: int = 0
+    #: 工具调用统计（成功/失败/跳过/重试），由执行器产生。
+    tool_stats: dict[str, Any] = field(default_factory=dict)
 
     @property
     def tool_calls(self) -> int:
@@ -193,6 +195,15 @@ async def run_tool_loop(
     messages.extend(user_messages)
 
     result = LoopResult()
+
+    # 所有工具调用走同一个执行器：超时、状态归一、统计都在这里做。
+    from finagent.runtime import ExecutionPolicy, ToolExecutor, ToolRegistry
+
+    executor = ToolExecutor(
+        ToolRegistry(tools=dict(by_name)),
+        ExecutionPolicy(timeout_seconds=30.0, max_consecutive_failures=max_consecutive_failures),
+    )
+
     emit({"event": "agent_start", "agent": agent, "tools": sorted(by_name)})
 
     for iteration in range(1, max_iterations + 1):
@@ -256,46 +267,31 @@ async def run_tool_loop(
             call_id = call.get("id") or f"{agent}-{iteration}-{name}"
 
             record = ToolCallRecord(stage=stage, agent=agent, tool=name, args=args)
-            tool = by_name.get(name)
-            started = time.monotonic()
-            if tool is None:
-                record.ok = False
-                record.error = f"未知工具 '{name}'"
-                payload: Any = json.dumps(
-                    {"ok": False, "error": {"code": "unknown_tool", "message": record.error}},
-                    ensure_ascii=False,
-                )
-            else:
-                emit({"event": "tool_call", "agent": agent, "tool": name, "args": args})
-                started = time.monotonic()
-                try:
-                    payload = await tool.ainvoke(args)
-                except Exception as exc:  # noqa: BLE001 - surface, never crash the graph
-                    log.warning("%s/%s failed: %s", agent, name, exc)
-                    record.ok = False
-                    record.error = str(exc)
-                    payload = json.dumps(
-                        {"ok": False, "error": {"code": "tool_exception", "message": str(exc)}},
-                        ensure_ascii=False,
-                    )
+            emit({"event": "tool_call", "agent": agent, "tool": name, "args": args})
 
-            if record.ok:
-                ok_flag, error = _parse_envelope(stringify_tool_output(payload))
-                if not ok_flag:
-                    record.ok = False
-                    record.error = error
-            record.preview = _preview(stringify_tool_output(payload))
+            outcome = await executor.execute(name, args, call_id=call_id)
+            record.ok = outcome.ok
+            record.error = outcome.error_message or ""
             record.call_id = call_id
-            record.latency_ms = int((time.monotonic() - started) * 1000)
+            record.latency_ms = outcome.execution_time_ms
+            payload = outcome.to_envelope()
+            record.preview = _preview(payload)
             record.result_tokens = max(1, len(record.preview) // 4)
-            result.consecutive_failures = 0 if record.ok else result.consecutive_failures + 1
+            # 只有真正的失败（failed/timeout）才计入连续失败；
+            # 「当前数据源不支持」是能力边界，重复出现不该触发刹车。
+            if outcome.failed:
+                result.consecutive_failures += 1
+            elif outcome.ok:
+                result.consecutive_failures = 0
             result.records.append(record)
             emit(
                 {
                     "event": "tool_result",
                     "agent": agent,
                     "tool": name,
-                    "ok": record.ok,
+                    "ok": outcome.ok,
+                    "status": str(outcome.status),
+                    "error_code": outcome.error_code,
                     "preview": record.preview[:220],
                 }
             )
@@ -311,12 +307,14 @@ async def run_tool_loop(
         result.stopped_reason = "max_iterations"
         result.text = result.text or "已达到工具调用上限，以下为目前掌握的信息。"
 
+    result.tool_stats = executor.summary()
     emit(
         {
             "event": "agent_end",
             "agent": agent,
             "tool_calls": result.tool_calls,
             "stopped": result.stopped_reason,
+            "tool_stats": result.tool_stats,
         }
     )
     return result

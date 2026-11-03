@@ -431,6 +431,31 @@ copy .env.example .env
 > `.env` 并立刻生效，见[在界面里接入大模型](#在界面里接入大模型不用改文件不用重启)。
 > 手动改文件适合批量部署或 CI。
 
+### 2.0 · 工具执行管线
+
+所有 MCP 工具走同一个执行器（`finagent.runtime`），因此超时、状态、统计只有一份口径：
+
+```python
+result = await executor.execute("get_daily_price", {"ts_code": "600519.SH"})
+result.status        # success / partial / failed / unsupported / timeout / cancelled
+result.error_code    # REMOTE_DISCONNECTED / TIMEOUT / CAPABILITY_NOT_SUPPORTED …
+result.retryable     # 由抛出方声明，不靠调用方猜
+result.execution_time_ms
+```
+
+**为什么要有这个**：之前「工具失败」有三种表现（抛异常、`ok:false`、空 DataFrame），
+日志里出现过「连续 4 次工具失败」和「错误=0」同时出现——因为失败计数和错误列表是
+两套互不相干的变量。现在统计从 `ToolResult` 派生：
+
+```
+tool_calls_total / succeeded / partial / failed / unsupported / skipped
+provider_retries / max_consecutive_failures
+```
+
+关键区分：**`unsupported` 不算失败**。它是能力边界（当前数据源没有这项能力），
+重复出现不该触发「连续失败」刹车，也不该让模型以为工具坏了。
+
+### 2.0 · 数据源网关
 ### 2.0 · 数据源网关
 
 免费行情接口会限流、会断连——这是常态，不是异常。所以 2.0 在 provider 之上加了一层

@@ -338,11 +338,16 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
                 on_compact=_compact_sink(state, recorder),
             )
 
+            stats = outcome.tool_stats or {}
             log.info(
-                "专家 %s 完成（模式=%s，工具调用=%d，错误=%d，返工=%s）",
+                "专家 %s 完成（模式=%s，工具=%d[成功%d/失败%d/不支持%d/重试%d]，错误=%d，返工=%s）",
                 agent,
                 outcome.mode,
-                outcome.tool_calls,
+                int(stats.get("tool_calls_total") or outcome.tool_calls),
+                int(stats.get("tool_calls_succeeded") or 0),
+                int(stats.get("tool_calls_failed") or 0),
+                int(stats.get("tool_calls_unsupported") or 0),
+                int(stats.get("provider_retries") or 0),
                 len(outcome.errors),
                 "是" if is_revision else "否",
             )

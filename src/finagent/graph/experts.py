@@ -145,6 +145,19 @@ def _label(agent: str) -> str:
     return AGENT_LABELS.get(agent, agent)
 
 
+def _merge_stats(loops: list[Any]) -> dict[str, Any]:
+    """把每轮循环的工具统计合并成一份。"""
+
+    merged: dict[str, int] = {}
+    for loop in loops:
+        for key, value in (getattr(loop, "tool_stats", None) or {}).items():
+            if key == "max_consecutive_failures":
+                merged[key] = max(merged.get(key, 0), int(value))
+            else:
+                merged[key] = merged.get(key, 0) + int(value)
+    return merged
+
+
 def _traces(records: list[Any]) -> list[ToolTraceEntry]:
     """把循环记录转成契约里的工具轨迹。"""
 
@@ -494,6 +507,7 @@ async def _run_llm(
         mode="llm",
         artifacts=artifacts,
         trace=[record.to_dict() for record in records],
+        tool_stats=_merge_stats(loops),
     )
 
 

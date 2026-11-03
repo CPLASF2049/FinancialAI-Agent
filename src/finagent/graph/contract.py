@@ -194,6 +194,9 @@ class ExpertResult:
     artifacts: dict[str, Any] = field(default_factory=dict)
     #: 原始工具调用记录（dict 形态）。critic 靠它挑证据，保留原样不改。
     trace: list[dict[str, Any]] = field(default_factory=list)
+    #: 工具调用统计（成功/失败/不支持/重试）。
+    #: 单独于 ``error`` 存在：**失败次数不等于错误条数**，混在一起就说不清。
+    tool_stats: dict[str, Any] = field(default_factory=dict)
 
     # ---- 兼容旧接口的只读视图（下游改造期间不用一次性全改） ----
     @property
@@ -222,6 +225,8 @@ class ExpertResult:
             "passes": list(self.passes),
             "mode": self.mode,
         }
+        if self.tool_stats:
+            payload["tool_stats"] = self.tool_stats
         if self.artifacts:
             payload["artifacts"] = sorted(self.artifacts)
         if self.error:
@@ -259,6 +264,7 @@ def normalize_result(
     data_as_of: str = "",
     artifacts: dict[str, Any] | None = None,
     trace: list[dict[str, Any]] | None = None,
+    tool_stats: dict[str, Any] | None = None,
 ) -> ExpertResult:
     """把任意来源的原始输出收敛成 :class:`ExpertResult`。
 
@@ -291,4 +297,5 @@ def normalize_result(
         mode=mode,
         artifacts=dict(artifacts or {}),
         trace=list(trace or []),
+        tool_stats=dict(tool_stats or {}),
     )
