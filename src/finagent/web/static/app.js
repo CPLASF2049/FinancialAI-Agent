@@ -937,14 +937,178 @@
   }
 
   // ------------------------------------------------------------------
+  // 设置抽屉：设置 / 插件 / 接入大模型 / 关于
+  // ------------------------------------------------------------------
+  const PROVIDER_LABELS = {
+    eastmoney: "东方财富行情",
+    tushare: "Tushare 行情",
+    offline: "离线演示",
+  };
+
+  const AGENT_HINTS = {
+    researcher: "查行情、读财报、筛股票、算指标",
+    quant: "跑回测、看持仓、算组合指标",
+    alert: "设价格提醒、看资金流",
+  };
+
+  function openPanel(tab) {
+    $("drawer").classList.remove("hidden");
+    $("drawerBackdrop").classList.remove("hidden");
+    renderPanel(tab || "settings");
+  }
+
+  function closePanel() {
+    $("drawer").classList.add("hidden");
+    $("drawerBackdrop").classList.add("hidden");
+  }
+
+  function renderPanel(tab) {
+    document.querySelectorAll("#drawerTabs button").forEach((button) => {
+      button.classList.toggle("on", button.dataset.tab === tab);
+    });
+    const info = state.info || {};
+    const body = $("drawerBody");
+    body.innerHTML = "";
+
+    if (tab === "settings") {
+      body.appendChild(section("数据与运行"));
+      body.appendChild(kv("数据源", PROVIDER_LABELS[info.provider] || info.provider || "—"));
+      body.appendChild(kv("传输方式", info.transport || "inprocess"));
+      body.appendChild(kv("工具数量", String(info.tool_count ?? "—")));
+      body.appendChild(kv("Agent 数量", String((info.experts || []).length)));
+      body.appendChild(kv("最大跳转", String(info.max_hops ?? "—")));
+
+      body.appendChild(section("构建"));
+      body.appendChild(kv("版本", info.version || "—"));
+      body.appendChild(kv("代码版本", (info.build && info.build.sha) || "dev"));
+      body.appendChild(kv("启动时间", (info.build && info.build.started) || "—"));
+
+      body.appendChild(section("大模型"));
+      const llm = info.llm || {};
+      body.appendChild(kv("状态", llm.enabled ? "已接入" : "未接入"));
+      if (llm.enabled) {
+        body.appendChild(kv("厂商", llm.provider || "—"));
+        body.appendChild(kv("模型", llm.model || "—"));
+      }
+
+      const note = document.createElement("div");
+      note.className = "drawer-note";
+      note.textContent =
+        "「代码版本」是本进程加载的代码。改了代码但界面没变，先重启服务再看这里。";
+      body.appendChild(note);
+      return;
+    }
+
+    if (tab === "plugins") {
+      body.appendChild(section("Agent"));
+      (info.experts || []).forEach((item) => {
+        const card = document.createElement("div");
+        card.className = "agent-card";
+        const title = document.createElement("strong");
+        title.textContent = `${item.label} · ${item.tool_count} 个工具`;
+        const desc = document.createElement("small");
+        desc.textContent = `${item.agent} — ${AGENT_HINTS[item.agent] || ""}`;
+        card.appendChild(title);
+        card.appendChild(desc);
+        body.appendChild(card);
+      });
+
+      body.appendChild(section("工具来源"));
+      body.appendChild(kv("行情 / 选股", "market 服务"));
+      body.appendChild(kv("回测 / 指标", "quant 服务"));
+      body.appendChild(kv("持仓 / 预警", "portfolio 服务"));
+      body.appendChild(kv("妙想 Skills", "未配置时自动隐藏"));
+
+      const note = document.createElement("div");
+      note.className = "drawer-note";
+      note.textContent =
+        "工具按职责拆成独立 MCP 服务，Agent 只拿到与自己相关的白名单，不共享全量工具。";
+      body.appendChild(note);
+      return;
+    }
+
+    if (tab === "llm") {
+      const llm = info.llm || {};
+      body.appendChild(section("当前状态"));
+      body.appendChild(kv("状态", llm.enabled ? "已接入" : "未接入"));
+      body.appendChild(kv("厂商", llm.provider || "—"));
+      body.appendChild(kv("模型", llm.model || "—"));
+
+      const open = document.createElement("button");
+      open.className = "btn-primary";
+      open.textContent = llm.enabled ? "修改配置" : "接入大模型";
+      open.addEventListener("click", () => {
+        closePanel();
+        openLlmModal();
+      });
+      body.appendChild(open);
+
+      const note = document.createElement("div");
+      note.className = "drawer-note";
+      note.textContent =
+        "不接大模型也能用：规划、取数、计算、校验都是确定性代码，只是不生成自然语言解释。";
+      body.appendChild(note);
+      return;
+    }
+
+    if (tab === "about") {
+      const title = document.createElement("div");
+      title.className = "agent-card";
+      title.innerHTML =
+        "<strong>FinancialAI-Agent " +
+        (info.version || "") +
+        "</strong><small>A 股投研 Agent · MCP + LangGraph</small>";
+      body.appendChild(title);
+
+      const intro = document.createElement("div");
+      intro.className = "drawer-note";
+      intro.textContent =
+        "研究 / 量化 / 预警三个 Agent 协作，结论先过逻辑审查、再过证据校验（数字由代码核对），最后过风控硬规则才交付。";
+      body.appendChild(intro);
+
+      body.appendChild(section("设计原则"));
+      body.appendChild(kv("数字来源", "工具返回，可追溯"));
+      body.appendChild(kv("涨跌幅", "代码重算，不让模型编"));
+      body.appendChild(kv("失败处理", "部分成功并说明缺什么"));
+
+      body.appendChild(section("免责"));
+      const disclaimer = document.createElement("div");
+      disclaimer.className = "drawer-note";
+      disclaimer.textContent =
+        "数据来自公开行情接口，可能存在延迟或缺失；所有内容不构成投资建议。";
+      body.appendChild(disclaimer);
+    }
+  }
+
+  function section(title) {
+    const node = document.createElement("h3");
+    node.textContent = title;
+    return node;
+  }
+
+  function kv(label, value) {
+    const row = document.createElement("div");
+    row.className = "kv";
+    const left = document.createElement("span");
+    left.textContent = label;
+    const right = document.createElement("span");
+    right.textContent = value;
+    row.appendChild(left);
+    row.appendChild(right);
+    return row;
+  }
+
+  // ------------------------------------------------------------------
   // 顶部状态
   // ------------------------------------------------------------------
   async function loadInfo() {
     try {
       const info = await (await fetch("/api/info")).json();
       const llmOn = info.llm && info.llm.enabled;
-      $("providerPill").textContent =
-        info.provider === "tushare" ? "Tushare 行情" : "离线演示数据";
+      // 之前只有 tushare 一个分支，其余（含 eastmoney）全落到「离线演示数据」，
+      // 于是真实行情被标成演示数据——这是显示 bug，不是数据问题。
+      $("providerPill").textContent = PROVIDER_LABELS[info.provider] || info.provider;
+      $("providerPill").title = "当前数据源：" + (info.provider || "未知");
       $("llmPill").textContent = llmOn
         ? `${info.llm.provider} · ${info.llm.model}`
         : "未接大模型 · 点这里接入";
@@ -953,15 +1117,23 @@
 
       const pills = $("statusPills");
       pills.innerHTML = "";
-      pills.appendChild(pill(`${info.tool_count} 个工具`));
-      pills.appendChild(pill(`${(info.experts || []).length} 个专家`));
+
+      // 不再是「41 个工具 / 3 个专家」两枚干巴巴的胶囊，
+      // 而是一枚能点开设置的总览 + 各 Agent 的分工。
+      const overview = pill(`${info.tool_count} 工具 · ${(info.experts || []).length} Agent`);
+      overview.classList.add("action");
+      overview.title = "查看数据源、工具分工与构建信息";
+      overview.addEventListener("click", () => openPanel("settings"));
+      pills.appendChild(overview);
+      pills.appendChild(pill(PROVIDER_LABELS[info.provider] || info.provider));
       if (!llmOn) {
-        const tip = pill("点这里接入大模型");
+        const tip = pill("接入大模型");
         tip.classList.add("action");
         tip.title = "填入 API Key 即可启用真实推理";
-        tip.addEventListener("click", openLlmModal);
+        tip.addEventListener("click", () => openPanel("llm"));
         pills.appendChild(tip);
       }
+      state.info = info;
       state.llmEnabled = !!llmOn;
     } catch (err) {
       console.warn("加载状态失败", err);
@@ -1176,6 +1348,17 @@
 
     // ---- 接入大模型 ----
     $("openLlm").addEventListener("click", openLlmModal);
+  $("openPanel").addEventListener("click", () => openPanel("settings"));
+  $("drawerClose").addEventListener("click", closePanel);
+  $("drawerBackdrop").addEventListener("click", closePanel);
+  document.querySelectorAll("#drawerTabs button").forEach((button) => {
+    button.addEventListener("click", () => renderPanel(button.dataset.tab));
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("drawer").classList.contains("hidden")) {
+      closePanel();
+    }
+  });
     $("llmPill").addEventListener("click", openLlmModal);
     $("llmClose").addEventListener("click", closeLlmModal);
     $("llmCancel").addEventListener("click", closeLlmModal);

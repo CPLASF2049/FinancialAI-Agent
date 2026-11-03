@@ -62,37 +62,6 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
 # ----------------------------------------------------------------------
-def _ui_dir() -> str:
-    """Vue/React 构建产物目录；不存在时返回一个空目录避免启动失败。"""
-
-    directory = Path(__file__).resolve().parent / "static" / "ui"
-    if not directory.exists():
-        directory.mkdir(parents=True, exist_ok=True)
-        (directory / "index.html").write_text(
-            "<!doctype html><meta charset='utf-8'>"
-            "<body style='background:#141413;color:#faf9f5;font-family:sans-serif;padding:24px'>"
-            "<p>新版工作台尚未构建。执行：</p>"
-            "<pre>cd webui &amp;&amp; npm install &amp;&amp; npm run build</pre>"
-            "<p><a style='color:#d97757' href='/classic'>先使用经典界面</a></p>",
-            encoding="utf-8",
-        )
-    return str(directory)
-
-
-async def redirect_to_ui(request: Request) -> Response:
-    """首页 -> 新版工作台。经典界面保留在 /classic，便于对照。"""
-
-    from starlette.responses import RedirectResponse
-
-    return RedirectResponse(url="/ui/")
-
-
-def _is_page(request: Request) -> bool:
-    """给 NoCacheStaticMiddleware 用：只有页面请求需要 no-cache。"""
-
-    return request.url.path in ("/", "/ui", "/ui/") or request.url.path.startswith("/ui/")
-
-
 class WebState:
     """整个进程共享的运行时对象。"""
 
@@ -796,9 +765,8 @@ def build_app(settings: Settings | None = None, *, transport: str | None = None)
             await web.stop()
 
     routes = [
-        # 新版工作台（Vite 构建产物）是默认入口；经典界面保留在 /classic 便于对照
-        Mount("/ui", app=StaticFiles(directory=_ui_dir(), html=True), name="ui"),
-        Route("/", redirect_to_ui),
+        Route("/", index),
+        # 旧地址仍然可用，避免收藏夹失效
         Route("/classic", index),
         Route("/api/info", api_info),
         Route("/api/steer", api_steer, methods=["POST"]),

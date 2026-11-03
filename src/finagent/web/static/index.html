@@ -46,6 +46,12 @@
           </svg>
           <span>接入大模型</span>
         </button>
+        <button class="settings-btn ghost" id="openPanel" title="设置 / 插件 / 关于">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+            <path d="M4 7h16M4 12h16M4 17h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+          </svg>
+          <span>设置</span>
+        </button>
       </div>
     </header>
 
@@ -79,6 +85,21 @@
     </footer>
   </main>
 </div>
+
+<div class="drawer-backdrop hidden" id="drawerBackdrop"></div>
+
+<aside class="drawer hidden" id="drawer" role="dialog" aria-modal="true" aria-label="设置面板">
+  <div class="drawer-head">
+    <div class="drawer-tabs" id="drawerTabs">
+      <button data-tab="settings" class="on">设置</button>
+      <button data-tab="plugins">插件</button>
+      <button data-tab="llm">接入大模型</button>
+      <button data-tab="about">关于</button>
+    </div>
+    <button class="drawer-close" id="drawerClose" title="关闭（Esc）">×</button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+</aside>
 
 <div class="modal-backdrop hidden" id="llmModal">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="llmTitle">

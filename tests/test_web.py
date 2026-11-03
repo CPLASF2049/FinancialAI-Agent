@@ -67,16 +67,10 @@ def client(offline_env) -> TestClient:
         yield test_client
 
 
-def test_root_redirects_to_new_ui(client: TestClient) -> None:
-    """首页现在是新版工作台（Vite 产物），经典界面保留在 /classic。"""
+def test_index_serves_the_ui(client: TestClient) -> None:
+    """首页就是经典界面（新版工作台已回滚）。"""
 
-    response = client.get("/", follow_redirects=False)
-    assert response.status_code in (302, 307)
-    assert response.headers["location"] in ("/ui/", "/ui")
-
-
-def test_classic_ui_is_still_served(client: TestClient) -> None:
-    response = client.get("/classic")
+    response = client.get("/")
     assert response.status_code == 200
     assert "Fin-Agent" in response.text
     assert "/static/app.js" in response.text
