@@ -28,6 +28,7 @@ from finagent.mcp_servers._common import (
     frame_payload,
     ok,
     provider,
+    quality_gate,
     serve,
     settings,
 )
@@ -246,7 +247,15 @@ def build_server() -> FastMCP:
             cal.format_date(end_date) if end_date else cal.format_date(cal.latest_trading_day())
         )
         frame = provider().daily_price(code, window_start, window_end, adj)
+        # 数据进入上下文之前先过契约：时点因果、代码后缀、复权口径、缺失值
+        quality = quality_gate(
+            frame,
+            decision_time=window_end,
+            units={"close": "元", "vol": "手", "amount": "元"},
+            context=f"{code} 日线数据质量校验未通过",
+        )
         payload = frame_payload(frame, limit=limit, newest_first=True)
+        payload["data_quality"] = quality
         payload.update(
             {
                 "ts_code": code,

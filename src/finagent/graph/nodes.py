@@ -323,7 +323,9 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
             # 没有可交付内容（契约违反 / 模型失败）时不必再进审查——
             # 拿一段空文本去问「这段靠谱吗」纯属浪费一次模型调用。
             if not outcome.answer.strip():
-                log.warning("专家 %s 没有可交付内容（%s），跳过审查", agent, outcome.termination_reason)
+                log.warning(
+                    "专家 %s 没有可交付内容（%s），跳过审查", agent, outcome.termination_reason
+                )
                 update["next_agent"] = "finish"
                 update["decision_log"] = [
                     {

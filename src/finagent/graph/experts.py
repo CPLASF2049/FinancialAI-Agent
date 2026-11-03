@@ -454,9 +454,7 @@ async def _run_llm(
 
     body = "\n\n".join(sections)
     # 终止原因取最后一个子职责的循环停止原因；一节都没产出就是契约违反。
-    termination = (
-        _termination_from(loops=loops) if body.strip() else Termination.CONTRACT_VIOLATION
-    )
+    termination = _termination_from(loops=loops) if body.strip() else Termination.CONTRACT_VIOLATION
     usage = TokenUsage(
         input_tokens=sum(int(getattr(item, "input_tokens", 0) or 0) for item in loops),
         output_tokens=sum(int(getattr(item, "output_tokens", 0) or 0) for item in loops),

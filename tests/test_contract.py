@@ -27,7 +27,9 @@ from finagent.graph.contract import (
 
 
 class _Reply:
-    def __init__(self, text: str = "", tool_calls: list[dict] | None = None, usage: dict | None = None):
+    def __init__(
+        self, text: str = "", tool_calls: list[dict] | None = None, usage: dict | None = None
+    ):
         self.content = text
         self.tool_calls = tool_calls or []
         self.usage_metadata = usage or {}
@@ -89,7 +91,10 @@ def test_budget_iterations_termination() -> None:
     """一直调工具、从不收尾 → 轮数用尽。"""
 
     tool = _Tool("get_realtime_price")
-    replies = [_Reply(tool_calls=[{"name": "get_realtime_price", "args": {}, "id": f"c{i}"}]) for i in range(5)]
+    replies = [
+        _Reply(tool_calls=[{"name": "get_realtime_price", "args": {}, "id": f"c{i}"}])
+        for i in range(5)
+    ]
     result = asyncio.run(
         run_tool_loop(
             agent="researcher",

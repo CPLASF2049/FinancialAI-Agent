@@ -146,6 +146,28 @@ def frame_payload(
     }
 
 
+def quality_gate(
+    frame: pd.DataFrame,
+    *,
+    decision_time: Any,
+    units: dict[str, str] | None = None,
+    context: str = "",
+) -> dict[str, Any]:
+    """数据进入模型上下文之前的可执行校验。
+
+    **拒绝而非解释**：阻断性违规直接抛 :class:`DataQualityViolation`，
+    由 ``error_boundary`` 转成 ``{"ok": false, "error": {"code": "DATA_QUALITY_VIOLATION"}}``。
+    不让模型拿到「可疑但看起来正常」的数据，再在结论里补一句「可能有延迟」。
+    """
+
+    from finagent.core.quality import check_missing, enforce, validate_series
+
+    report = validate_series(frame, decision_time=decision_time, units=units)
+    report.violations.extend(check_missing(frame).violations)
+    enforce(report, context=context or "数据质量校验未通过")
+    return report.to_dict()
+
+
 def table(frame: pd.DataFrame, **kwargs: Any) -> str:
     return ok(frame_payload(frame, **kwargs))
 
