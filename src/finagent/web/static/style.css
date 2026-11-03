@@ -1,27 +1,29 @@
 :root {
+  /* 白底 + 近黑文字：像终端/编辑器，而不是营销页 */
   --bg: #ffffff;
-  --bg-soft: #f7f8fb;
+  --bg-soft: #fafafa;
   --panel: #ffffff;
-  --panel-2: #f1f3f8;
-  --border: #e4e7ee;
-  --border-strong: #d3d8e3;
-  --text: #1b2130;
-  --text-soft: #414a5c;
-  --muted: #6b7488;
-  --accent: #2563eb;
-  --accent-hover: #1d4ed8;
-  --accent-soft: rgba(37, 99, 235, 0.08);
-  --ok: #047857;
-  --ok-soft: rgba(5, 150, 105, 0.1);
+  --panel-2: #f4f4f5;
+  --border: #e5e5e5;
+  --border-strong: #d4d4d4;
+  --text: #0a0a0a;
+  --text-soft: #3f3f46;
+  --muted: #71717a;
+  --accent: #1a1a1a;
+  --accent-hover: #000000;
+  --accent-soft: rgba(0, 0, 0, 0.05);
+  --ok: #15803d;
+  --ok-soft: rgba(21, 128, 61, 0.08);
   --warn: #b45309;
-  --err: #dc2626;
-  --radius: 14px;
-  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04);
-  --shadow-md: 0 4px 16px rgba(16, 24, 40, 0.08);
-  --shadow-lg: 0 24px 60px rgba(16, 24, 40, 0.18);
-  --font: "Segoe UI", system-ui, -apple-system, "Microsoft YaHei", "PingFang SC",
-    "Hiragino Sans GB", sans-serif;
-  --mono: "Cascadia Code", Consolas, "SF Mono", Menlo, monospace;
+  --err: #b91c1c;
+  /* 更小的圆角、更克制的阴影：工具感强于卡片感 */
+  --radius: 8px;
+  --shadow-sm: 0 1px 0 rgba(0, 0, 0, 0.03);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.12);
+  --font: "Inter", "Segoe UI", system-ui, -apple-system, "Microsoft YaHei",
+    "PingFang SC", "Hiragino Sans GB", sans-serif;
+  --mono: "Cascadia Code", "JetBrains Mono", Consolas, "SF Mono", Menlo, monospace;
 }
 
 * { box-sizing: border-box; }
@@ -32,7 +34,7 @@ html, body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
-  font-size: 15px;
+  font-size: 14.5px;
   -webkit-font-smoothing: antialiased;
 }
 

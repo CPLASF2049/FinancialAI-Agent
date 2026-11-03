@@ -253,6 +253,8 @@
       resetView();
     }
     await loadThreads();
+    // 这个会话可能还有后台在跑的任务：接回来，而不是让它白跑
+    await resumeRun(id);
   }
 
   // ------------------------------------------------------------------
@@ -538,6 +540,16 @@
         throw new Error(`服务返回 ${response.status}`);
       }
 
+      // 记住这次的 run_id：切走 / 刷新后靠它重连，而不是重跑
+      const runId = response.headers.get("X-Run-Id");
+      if (runId) {
+        state.runId = runId;
+        state.lastSeq = 0;
+        if (state.threadId) {
+          localStorage.setItem(`finagent.run.${state.threadId}`, runId);
+        }
+      }
+
       armWatchdog({ view, thinking });
       await consumeStream(response.body, { view, thinking });
     } catch (err) {
@@ -560,6 +572,10 @@
         box.className = "error-box";
         box.textContent = `出了点问题：${err.message}`;
         view.bubble.appendChild(box);
+      }
+      // 正常收尾：这条 thread 不再有待恢复的 run
+      if (state.threadId) {
+        localStorage.removeItem(`finagent.run.${state.threadId}`);
       }
     } finally {
       clearWatchdog();
@@ -616,6 +632,56 @@
     box.classList.add("show");
     clearTimeout(box._timer);
     box._timer = setTimeout(() => box.classList.remove("show"), 2600);
+  }
+
+  // ------------------------------------------------------------------
+  // 断线重连：后端在跑，前端回来接着看
+  // ------------------------------------------------------------------
+  async function resumeRun(threadId) {
+    const runId = localStorage.getItem(`finagent.run.${threadId}`);
+    if (!runId) return false;
+
+    try {
+      const status = await fetch(`/api/runs/${runId}`).then((r) => r.json());
+      if (!status || status.exists === false || status.done) {
+        localStorage.removeItem(`finagent.run.${threadId}`);
+        return false;
+      }
+    } catch {
+      return false;
+    }
+
+    // 后台还在跑：开一个气泡接上，不重新发请求
+    const view = appendMessage("assistant", { text: "" });
+    const thinking = document.createElement("div");
+    thinking.className = "thinking";
+    thinking.innerHTML =
+      '<span class="dots"><i></i><i></i><i></i></span><span>后台仍在处理，正在接回结果…</span>';
+    view.bubble.insertBefore(thinking, view.text);
+
+    state.tokens = "";
+    state.streaming = true;
+    setStreaming(true);
+    try {
+      const response = await fetch(`/api/stream/${runId}?after=0`);
+      if (response.body) {
+        armWatchdog({ view, thinking });
+        await consumeStream(response.body, { view, thinking });
+      }
+    } catch (err) {
+      thinking.remove();
+      const box = document.createElement("div");
+      box.className = "error-box";
+      box.textContent = `接回失败：${err.message}`;
+      view.bubble.appendChild(box);
+    } finally {
+      clearWatchdog();
+      setStreaming(false);
+      state.streaming = false;
+      localStorage.removeItem(`finagent.run.${threadId}`);
+      await loadThreads();
+    }
+    return true;
   }
 
   async function consumeStream(body, ctx) {
