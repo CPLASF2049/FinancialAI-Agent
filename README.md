@@ -431,6 +431,32 @@ copy .env.example .env
 > `.env` 并立刻生效，见[在界面里接入大模型](#在界面里接入大模型不用改文件不用重启)。
 > 手动改文件适合批量部署或 CI。
 
+### 2.0 · 统一执行循环与三层上下文
+
+`run_tool_loop` 现在委托给 `finagent.runtime.AgentRuntime`：一次 step 内部的
+「模型 → 工具 → 模型」循环只有一份实现，专家不再各写一套。
+
+**执行预算**（`ExecutionBudget` / `Budget`）：
+
+```python
+Budget(max_llm_calls=15, max_tool_calls=40, max_retries=2, timeout_seconds=180)
+```
+
+超了立刻停，并把原因写进 `stopped_reason`。这防止「为了一个非关键的技术指标
+反复调用失败工具，把整轮拖到超时」。
+
+**三层上下文**，按价值决定压缩顺序：
+
+| 层 | 内容 | 压缩策略 |
+| --- | --- | --- |
+| `core` | 用户目标、约束、审查意见 | **永不压缩** |
+| `summary` | 专家结论、证据引用 | 折叠成一条，保真 |
+| `detail` | 工具返回的原始数据 | 最先压缩，换成 `[已压缩 tool:xxx]` + 摘要 |
+
+压掉的详情会登记到 `context.references`，所以「压缩」不等于「丢失」——
+需要回溯时还能按 `call_id` 找到原文。
+
+### 2.0 · 证据校验（独立于 Critic）
 ### 2.0 · 证据校验（独立于 Critic）
 
 Critic 是语言模型：它能判断「这段话顺不顺、前后矛不矛盾」，判断不了

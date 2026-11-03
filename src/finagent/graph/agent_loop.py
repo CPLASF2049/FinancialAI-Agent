@@ -180,134 +180,64 @@ async def run_tool_loop(
     #: 压缩发生时的回调。把「压掉了什么」记进事件表，恢复时才有上下文可依。
     on_compact: Any = None,
 ) -> LoopResult:
-    """跑到模型不再调用工具为止，并逐次记录每次调用。"""
+    """跑到模型不再调用工具为止。
 
-    import time
+    实现委托给 :class:`finagent.runtime.agent_runtime.AgentRuntime`——
+    统一执行循环、预算与三层上下文都在那边，这里只做**记录格式转换**，
+    对外行为（stopped_reason / records / tool_stats）保持不变。
+    """
 
-    from langchain_core.messages import SystemMessage, ToolMessage
+    from finagent.runtime import Budget
+    from finagent.runtime.agent_runtime import AgentRuntime
 
-    tool_list = list(tools)
-    by_name = {tool.name: tool for tool in tool_list}
-    bound = model.bind_tools(tool_list) if tool_list else model
     emit = stream_writer()
-
-    messages: list[Any] = [SystemMessage(content=system_prompt)]
-    messages.extend(user_messages)
-
-    result = LoopResult()
-
-    # 所有工具调用走同一个执行器：超时、状态归一、统计都在这里做。
-    from finagent.runtime import ExecutionPolicy, ToolExecutor, ToolRegistry
-
-    executor = ToolExecutor(
-        ToolRegistry(tools=dict(by_name)),
-        ExecutionPolicy(timeout_seconds=30.0, max_consecutive_failures=max_consecutive_failures),
+    budget = Budget(
+        max_llm_calls=max_iterations,
+        max_tool_calls=10_000,
+        max_retries=max(0, max_consecutive_failures - 3),
     )
 
-    emit({"event": "agent_start", "agent": agent, "tools": sorted(by_name)})
+    runtime = AgentRuntime(
+        agent=agent,
+        model=model,
+        tools=tools,
+        system_prompt=system_prompt,
+        budget=budget,
+        context_budget=context_budget,
+        max_iterations=max_iterations,
+        deadline=deadline,
+        is_cancelled=is_cancelled,
+        on_compact=on_compact,
+        stage=stage,
+        token_budget=token_budget,
+    )
+    outcome = await runtime.run(user_messages, emit=emit)
 
-    for iteration in range(1, max_iterations + 1):
-        # 时间预算要能穿透到节点内部：模型慢的时候，光靠 supervisor 之间检查
-        # 拦不住单个专家——它内部可能连着跑好几次工具调用，把一轮拖到几分钟。
-        if is_cancelled is not None and is_cancelled():
-            log.info("工具循环收到取消信号，停止")
-            result.stopped_reason = "cancelled"
-            break
-
-        if token_budget is not None and (result.input_tokens + result.output_tokens) > token_budget:
-            log.warning("token 预算用尽，停止继续调用工具")
-            result.stopped_reason = "budget_tokens"
-            break
-
-        if deadline is not None and time.monotonic() > deadline:
-            log.warning("工具循环已超时（第 %d 轮前），停止继续调用工具", iteration)
-            result.stopped_reason = "deadline"
-            break
-
-        result.iterations = iteration
-        # 进模型之前先压一压：等上下文溢出再处理就晚了
-        from finagent.graph.compaction import compact, context_tokens
-
-        before = context_tokens(messages)
-        compacted = compact(messages, budget=context_budget)
-        if compacted is not messages:
-            after = context_tokens(compacted)
-            log.info("上下文压缩：%d -> %d tokens", before, after)
-            if on_compact is not None:
-                try:
-                    on_compact(
-                        {"before_tokens": before, "after_tokens": after, "messages": len(messages)}
-                    )
-                except Exception:  # noqa: BLE001 - 观测失败不影响执行
-                    pass
-            messages = compacted
-        response = await _call_model(bound, messages, agent=agent, emit=emit)
-        messages.append(response)
-
-        # 计费口径：LangChain 的 usage_metadata 是标准字段，没有就跳过。
-        usage = getattr(response, "usage_metadata", None) or {}
-        if isinstance(usage, dict):
-            result.input_tokens += int(usage.get("input_tokens") or 0)
-            result.output_tokens += int(usage.get("output_tokens") or 0)
-
-        tool_calls = getattr(response, "tool_calls", None) or []
-        if not tool_calls:
-            result.text = _content_to_text(response)
-            result.stopped_reason = "completed"
-            break
-
-        if result.consecutive_failures >= max_consecutive_failures:
-            log.warning("连续 %d 次工具失败，停止本轮工具循环", result.consecutive_failures)
-            result.stopped_reason = "tool_failure"
-            break
-
-        for call in tool_calls:
-            name = call.get("name") or ""
-            args = call.get("args") or {}
-            call_id = call.get("id") or f"{agent}-{iteration}-{name}"
-
-            record = ToolCallRecord(stage=stage, agent=agent, tool=name, args=args)
-            emit({"event": "tool_call", "agent": agent, "tool": name, "args": args})
-
-            outcome = await executor.execute(name, args, call_id=call_id)
-            record.ok = outcome.ok
-            record.error = outcome.error_message or ""
-            record.call_id = call_id
-            record.latency_ms = outcome.execution_time_ms
-            payload = outcome.to_envelope()
-            record.preview = _preview(payload)
-            record.result_tokens = max(1, len(record.preview) // 4)
-            # 只有真正的失败（failed/timeout）才计入连续失败；
-            # 「当前数据源不支持」是能力边界，重复出现不该触发刹车。
-            if outcome.failed:
-                result.consecutive_failures += 1
-            elif outcome.ok:
-                result.consecutive_failures = 0
-            result.records.append(record)
-            emit(
-                {
-                    "event": "tool_result",
-                    "agent": agent,
-                    "tool": name,
-                    "ok": outcome.ok,
-                    "status": str(outcome.status),
-                    "error_code": outcome.error_code,
-                    "preview": record.preview[:220],
-                }
+    # 把执行器的调用明细搬进 LoopResult（下游 critic / 事件流都读它）
+    result = LoopResult(
+        text=outcome.text,
+        iterations=outcome.iterations,
+        stopped_reason=_map_reason(outcome.stopped_reason),
+        input_tokens=outcome.input_tokens,
+        output_tokens=outcome.output_tokens,
+        consecutive_failures=runtime.executor.stats.max_consecutive_failures,
+        tool_stats=outcome.stats,
+    )
+    for item in runtime.records:
+        result.records.append(
+            ToolCallRecord(
+                stage=str(item.get("stage") or ""),
+                agent=str(item.get("agent") or agent),
+                tool=str(item.get("tool") or ""),
+                args=dict(item.get("args") or {}),
+                ok=bool(item.get("ok")),
+                preview=str(item.get("preview") or ""),
+                error=str(item.get("error") or "") or None,
+                call_id=str(item.get("call_id") or ""),
+                latency_ms=int(item.get("latency_ms") or 0),
+                result_tokens=int(item.get("result_tokens") or 0),
             )
-
-            messages.append(
-                ToolMessage(
-                    content=stringify_tool_output(payload)[:20_000],
-                    tool_call_id=call_id,
-                    name=name,
-                )
-            )
-    else:
-        result.stopped_reason = "max_iterations"
-        result.text = result.text or "已达到工具调用上限，以下为目前掌握的信息。"
-
-    result.tool_stats = executor.summary()
+        )
     emit(
         {
             "event": "agent_end",
@@ -318,6 +248,23 @@ async def run_tool_loop(
         }
     )
     return result
+
+
+#: 执行循环的停止原因 -> 对外契约里的原因。保持既有测试与事件语义不变。
+_REASON_MAP = {
+    "completed": "completed",
+    "max_iterations": "max_iterations",
+    "deadline": "deadline",
+    "budget_llm_calls": "max_iterations",
+    "budget_tool_calls": "max_iterations",
+    "budget_cost": "max_iterations",
+    "tool_failure": "tool_failure",
+    "cancelled": "cancelled",
+}
+
+
+def _map_reason(reason: str) -> str:
+    return _REASON_MAP.get(str(reason), str(reason))
 
 
 async def _call_model(
