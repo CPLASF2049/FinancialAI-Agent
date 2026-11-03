@@ -506,6 +506,21 @@ def build_nodes(resources: GraphResources) -> dict[str, Callable[..., Any]]:
             evidence=evidence,
         )
 
+        # 证据校验：确定性代码检查「数字有没有出处、涨跌幅能不能重算、数据是否过期」。
+        # 这一层不依赖 LLM——Critic 能看出「像不像有依据」，只有代码能算出「对不对」。
+        evidence_report = _validate_evidence(answer, trace, question)
+        if evidence_report is not None and not evidence_report.ok:
+            for blocker in evidence_report.blockers:
+                result.issues.append(
+                    {
+                        "type": "unsupported",
+                        "label": "证据不足",
+                        "detail": blocker,
+                        "severity": "high",
+                    }
+                )
+            result.verdict = "revise"
+
         # 代码级校验：只要这一轮真的跑过回测，就用子进程复算一遍，和结论里声称的指标比对
         verification = None
         if settings.verify_backtests:
@@ -924,6 +939,29 @@ def _passes_for(agent: str, question: str) -> list[str]:
     from finagent.graph.experts import _default_passes
 
     return list(_default_passes(agent, question))
+
+
+def _validate_evidence(answer: str, trace: list[dict[str, Any]], question: str) -> Any:
+    """用确定性代码校验证据；失败时返回 None（校验不该拖垮审查）。"""
+
+    try:
+        from finagent.graph.evidence_validator import evidence_from_trace, validate
+
+        evidence = evidence_from_trace(trace)
+        if not evidence:
+            return None
+        as_of = ""
+        for item in trace:
+            preview = str(item.get("preview") or "")
+            marker = '"data_as_of":'
+            if marker in preview:
+                as_of = "".join(ch for ch in preview.split(marker, 1)[1][:20] if ch.isdigit())[:8]
+                break
+        now = time.strftime("%Y%m%d")
+        return validate(answer, evidence=evidence, as_of=as_of, now=now)
+    except Exception as exc:  # noqa: BLE001 - 校验失败不影响主流程
+        log.debug("证据校验异常：%s", exc)
+        return None
 
 
 def _compact_sink(state: FinState, recorder: Any):
